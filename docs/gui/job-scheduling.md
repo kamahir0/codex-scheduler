@@ -35,14 +35,16 @@ Ant Design の `Modal` と `Form` を使用し、直感的でミスのない入�
 5. **Scheduled Time (実行日時)**:
    - `DatePicker showTime`（秒単位または分単位指定）。
    - クイック選択タグ (`Space`):
-     - 「今夜 02:00（Tonight 2 AM）」
-     - 「今夜 02:05（Tonight 2:05 AM）」
-     - 「1時間後（In 1 Hour）」
-     - 「30分後（In 30 Min）」
+     - 「30分後」
+     - 「1時間後」
+     - 「2時間後」
+     - 「4時間後」
+     - 「明日同時刻」
 6. **Retry Settings (リトライ設定)**:
    - `Switch`: 利用枠（Quota）枯渇時に自動リトライする（デフォルト: ON）。
-   - `InputNumber`: リトライ間隔（デフォルト: `5` 分）。
-   - `InputNumber`: 最大試行回数（デフォルト: `6` 回 = 約30分間監視）。
+   - `Switch` が OFF の場合、リトライ間隔および最大試行回数の入力フィールドは `disabled`（非活性化）となる（MUST）。
+   - `InputNumber`: リトライ間隔（デフォルト: `300` 秒）。
+   - `InputNumber`: 最大試行回数（デフォルト: `6` 回）。
 
 ### 3. 実行ログ詳細ドロワー（Execution Logs Drawer）
 

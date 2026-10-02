@@ -24,7 +24,9 @@
 *.swp
 *.swo
 
-# Local environment
-.env
-.env.*
-!.env.example
+# Installer binaries
+*.dmg
+*.exe
+*.msi
+*.app.tar.gz
+

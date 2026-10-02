@@ -33,15 +33,12 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
 }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  const retryEnabled = Form.useWatch("retry_enabled", form) ?? true;
 
   useEffect(() => {
     if (open) {
-      // Default to next 02:05 AM if in the evening, or 1 hour later
       const now = dayjs();
-      let defaultTarget = now.hour(2).minute(5).second(0);
-      if (defaultTarget.isBefore(now)) {
-        defaultTarget = defaultTarget.add(1, "day");
-      }
+      const defaultTarget = now.add(1, "hour").second(0);
 
       form.setFieldsValue({
         provider: "codex",
@@ -63,19 +60,19 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
     }
   };
 
-  const handleSetPresetTime = (preset: "2am" | "205am" | "1hour" | "30min") => {
+  const handleSetPresetTime = (preset: "30min" | "1hour" | "2hour" | "4hour" | "tomorrow") => {
     const now = dayjs();
     let target: Dayjs;
-    if (preset === "2am") {
-      target = now.hour(2).minute(0).second(0);
-      if (target.isBefore(now)) target = target.add(1, "day");
-    } else if (preset === "205am") {
-      target = now.hour(2).minute(5).second(0);
-      if (target.isBefore(now)) target = target.add(1, "day");
+    if (preset === "30min") {
+      target = now.add(30, "minute");
     } else if (preset === "1hour") {
       target = now.add(1, "hour");
+    } else if (preset === "2hour") {
+      target = now.add(2, "hour");
+    } else if (preset === "4hour") {
+      target = now.add(4, "hour");
     } else {
-      target = now.add(30, "minute");
+      target = now.add(1, "day");
     }
     form.setFieldValue("scheduled_at", target);
   };
@@ -121,8 +118,8 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
       destroyOnClose
     >
       <Alert
-        message="夜間トークン復活時の自動再開"
-        description="Codexデスクトップアプリで停止したセッションのIDと作業ディレクトリを入力してください。指定時刻にOSバックグラウンドで自動的に 'continue' を送信し、翌朝デスクトップアプリから同一セッションの続きを再開できます。"
+        message="セッションの自動再開スケジュール"
+        description="Codexデスクトップアプリで停止したセッションのIDと作業ディレクトリを入力してください。指定時刻にOSバックグラウンドで自動的に 'continue' を送信し、同一セッションの続きから作業を再開できます。"
         type="info"
         showIcon
         style={{ marginBottom: 20 }}
@@ -189,20 +186,13 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
           <Space size={6} wrap>
             <span style={{ fontSize: "12px", color: "#8c8c8c" }}>クイック指定:</span>
             <Tag
+              style={{ cursor: "pointer" }}
+              onClick={() => handleSetPresetTime("30min")}
+            >
+              30分後
+            </Tag>
+            <Tag
               color="blue"
-              style={{ cursor: "pointer" }}
-              onClick={() => handleSetPresetTime("205am")}
-            >
-              今夜 02:05 (推奨)
-            </Tag>
-            <Tag
-              color="cyan"
-              style={{ cursor: "pointer" }}
-              onClick={() => handleSetPresetTime("2am")}
-            >
-              今夜 02:00
-            </Tag>
-            <Tag
               style={{ cursor: "pointer" }}
               onClick={() => handleSetPresetTime("1hour")}
             >
@@ -210,14 +200,36 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
             </Tag>
             <Tag
               style={{ cursor: "pointer" }}
-              onClick={() => handleSetPresetTime("30min")}
+              onClick={() => handleSetPresetTime("2hour")}
             >
-              30分後
+              2時間後
+            </Tag>
+            <Tag
+              style={{ cursor: "pointer" }}
+              onClick={() => handleSetPresetTime("4hour")}
+            >
+              4時間後
+            </Tag>
+            <Tag
+              style={{ cursor: "pointer" }}
+              onClick={() => handleSetPresetTime("tomorrow")}
+            >
+              明日同時刻
             </Tag>
           </Space>
         </div>
 
-        <div style={{ background: "rgba(0,0,0,0.02)", padding: 14, borderRadius: 8, marginBottom: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
+        <div
+          style={{
+            background: "rgba(0,0,0,0.02)",
+            padding: 14,
+            borderRadius: 8,
+            marginBottom: 24,
+            border: "1px solid rgba(0,0,0,0.06)",
+            opacity: retryEnabled ? 1 : 0.65,
+            transition: "opacity 0.2s ease",
+          }}
+        >
           <div style={{ fontWeight: 600, marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
             <span>利用枠リセット待ちリトライ設定</span>
           </div>
@@ -238,7 +250,13 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
               initialValue={300}
               style={{ marginBottom: 0 }}
             >
-              <InputNumber min={30} max={3600} step={30} addonAfter="秒 (5分)" />
+              <InputNumber
+                min={30}
+                max={3600}
+                step={30}
+                addonAfter="秒"
+                disabled={!retryEnabled}
+              />
             </Form.Item>
 
             <Form.Item
@@ -247,7 +265,12 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
               initialValue={6}
               style={{ marginBottom: 0 }}
             >
-              <InputNumber min={1} max={30} addonAfter="回" />
+              <InputNumber
+                min={1}
+                max={30}
+                addonAfter="回"
+                disabled={!retryEnabled}
+              />
             </Form.Item>
           </Space>
         </div>

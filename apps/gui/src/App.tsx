@@ -283,12 +283,11 @@ export const App: React.FC = () => {
               trigger={["hover"]}
               placement="bottomRight"
             >
-              <Tooltip title={`テーマ設定: ${getCurrentThemeLabel()} (クリックで選択)`}>
-                <Button
-                  type="text"
-                  icon={getCurrentThemeIcon()}
-                />
-              </Tooltip>
+              <Button
+                type="text"
+                aria-label="テーマ設定"
+                icon={getCurrentThemeIcon()}
+              />
             </Dropdown>
 
             <Button

@@ -4,6 +4,7 @@ members = [
   "crates/codex-scheduler-core",
   "crates/codex-scheduler-cli",
   "apps/gui/src-tauri",
+  "crates/xtask",
 ]
 default-members = [
   "crates/codex-scheduler-core",

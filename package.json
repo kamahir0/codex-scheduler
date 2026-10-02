@@ -6,6 +6,10 @@
     "apps/gui"
   ],
   "scripts": {
+    "release": "cargo xtask release",
+    "release:patch": "cargo xtask release patch",
+    "release:minor": "cargo xtask release minor",
+    "release:major": "cargo xtask release major",
     "frontend:lint": "npm --workspace @codex-scheduler/gui run lint",
     "frontend:build": "npm --workspace @codex-scheduler/gui run build",
     "gui:dev": "npm --workspace @codex-scheduler/gui run tauri -- dev",

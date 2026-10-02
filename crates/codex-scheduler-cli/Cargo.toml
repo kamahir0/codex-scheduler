@@ -1,0 +1,13 @@
+[package]
+name = "codex-scheduler-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+codex-scheduler-core = { path = "../codex-scheduler-core" }
+chrono = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

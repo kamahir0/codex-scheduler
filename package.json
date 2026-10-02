@@ -1,0 +1,14 @@
+{
+  "name": "codex-scheduler",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/gui"
+  ],
+  "scripts": {
+    "frontend:lint": "npm --workspace @codex-scheduler/gui run lint",
+    "frontend:build": "npm --workspace @codex-scheduler/gui run build",
+    "gui:dev": "npm --workspace @codex-scheduler/gui run tauri -- dev",
+    "gui:build": "npm --workspace @codex-scheduler/gui run tauri -- build"
+  }
+}

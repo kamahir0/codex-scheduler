@@ -1,7 +1,7 @@
 # Development State
 
 Stage: objective-complete
-Candidate: 982b33880dd72a6596fa3e2384d94c3bca21f8bc
+Candidate: 0ab239e85aec5d46aee6e4dfc4a7ccd17b737eb7
 Work base: 932557fbdacd77a18b980c312c9e9cfe2a0397f4
 
 ## Active work

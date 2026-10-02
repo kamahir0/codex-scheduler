@@ -87,7 +87,7 @@ export const JobTable: React.FC<JobTableProps> = ({
       title: "ステータス",
       dataIndex: "status",
       key: "status",
-      width: 185,
+      width: 175,
       render: (status: JobStatus) => getStatusBadge(status),
       filters: [
         { text: "待機中", value: "scheduled" },
@@ -130,6 +130,7 @@ export const JobTable: React.FC<JobTableProps> = ({
       title: "作業ディレクトリ",
       dataIndex: "cwd",
       key: "cwd",
+      width: 260,
       ellipsis: true,
       render: (cwd: string) => {
         const parts = cwd.split("/");
@@ -148,14 +149,14 @@ export const JobTable: React.FC<JobTableProps> = ({
       title: "指示プロンプト",
       dataIndex: "prompt",
       key: "prompt",
-      width: 120,
+      width: 140,
       render: (prompt: string) => <Tag color="geekblue">{prompt}</Tag>,
     },
     {
       title: "実行予定日時",
       dataIndex: "scheduled_at",
       key: "scheduled_at",
-      width: 210,
+      width: 200,
       sorter: (a, b) => dayjs(a.scheduled_at).valueOf() - dayjs(b.scheduled_at).valueOf(),
       defaultSortOrder: "ascend",
       render: (scheduled_at: string) => {
@@ -268,8 +269,9 @@ export const JobTable: React.FC<JobTableProps> = ({
       rowKey="id"
       loading={loading}
       pagination={{ pageSize: 8, showSizeChanger: false }}
-      style={{ borderRadius: 8, overflow: "hidden" }}
-      scroll={{ x: 960 }}
+      className="job-table-wrapper"
+      style={{ borderRadius: 8 }}
+      scroll={{ x: 1265 }}
     />
   );
 };

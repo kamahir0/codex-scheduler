@@ -201,7 +201,16 @@ export const App: React.FC = () => {
         },
       }}
     >
-      <Layout style={{ minHeight: "100vh", background: isDarkMode ? "#141414" : "#f5f5f5", cursor: "default" }}>
+      <Layout
+        style={{
+          height: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          background: isDarkMode ? "#141414" : "#f5f5f5",
+          cursor: "default",
+          overflow: "hidden",
+        }}
+      >
         <Header
           style={{
             display: "flex",
@@ -215,6 +224,7 @@ export const App: React.FC = () => {
             boxSizing: "border-box",
             cursor: "default",
             userSelect: "none",
+            flexShrink: 0,
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 12, height: "100%" }}>
@@ -301,7 +311,21 @@ export const App: React.FC = () => {
           </Space>
         </Header>
 
-        <Content style={{ padding: "20px 24px", maxWidth: 1400, margin: "0 auto", width: "100%", boxSizing: "border-box", cursor: "default" }}>
+        <Content
+          style={{
+            padding: "20px 24px",
+            maxWidth: 1400,
+            margin: "0 auto",
+            width: "100%",
+            boxSizing: "border-box",
+            cursor: "default",
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+            overflowY: "auto",
+          }}
+        >
           {systemInfo && !systemInfo.codex_installed && (
             <Alert
               message="OpenAI Codex CLI が検出されませんでした"
@@ -313,11 +337,13 @@ export const App: React.FC = () => {
                   セットアップ診断・手順
                 </Button>
               }
-              style={{ marginBottom: 16 }}
+              style={{ marginBottom: 16, flexShrink: 0 }}
             />
           )}
 
-          <MetricCards jobs={jobs} />
+          <div style={{ flexShrink: 0 }}>
+            <MetricCards jobs={jobs} />
+          </div>
 
           <div
             style={{
@@ -326,9 +352,23 @@ export const App: React.FC = () => {
               borderRadius: 10,
               border: `1px solid ${isDarkMode ? "#303030" : "#f0f0f0"}`,
               cursor: "default",
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, userSelect: "none", cursor: "default" }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 16,
+                userSelect: "none",
+                cursor: "default",
+                flexShrink: 0,
+              }}
+            >
               <div>
                 <Title level={5} style={{ margin: 0, cursor: "default" }}>
                   登録済みジョブ一覧

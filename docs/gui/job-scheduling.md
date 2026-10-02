@@ -14,13 +14,15 @@ Ant Design の `Table` コンポーネントを用い、以下のカラム構成
 
 | カラム名 | コンポーネント | 内容 |
 | :--- | :--- | :--- |
-| **Status** | `Badge` + `Tag` | 状態に応じたカラー（Scheduled: Blue, Running: Gold, Retrying: Orange, Succeeded: Green, Failed: Red, Cancelled: Default）。 |
-| **Provider / Session** | `Space` + `Typography.Text` | プロバイダアイコン（Codex）とセッションID（クリップボードコピー機能付き）。 |
-| **Working Directory** | `Typography.Text ellipsis` | プロジェクトパス（ホバーで `Tooltip` によるフルパス表示）。 |
-| **Prompt** | `Tag` or `Text` | 送信プロンプト（デフォルト `"continue"`）。 |
-| **Scheduled At** | `Typography.Text` | 予定時刻と相対時間（例: "2026-10-03 02:05 (in 2 hours)"）。 |
-| **Retry** | `Typography.Text` | 試行状況（例: "1 / 6 回"。リトライ無効設定時は "–"）。 |
-| **Actions** | `Space` of `Button`s | 「ログ詳細（View Logs）」「今すぐ実行（Run Now）」「キャンセル（Cancel）」「削除（Delete）」 |
+| **Status** | `Badge` + `Tag` | 状態に応じたカラー（Scheduled: Blue, Running: Gold, Retrying: Orange, Succeeded: Green, Failed: Red, Cancelled: Default）。幅: 175px。 |
+| **Provider / Session** | `Space` + `Typography.Text` | プロバイダアイコン（Codex）とセッションID（クリップボードコピー機能付き）。幅: 220px。 |
+| **Working Directory** | `Typography.Text ellipsis` | プロジェクトパス（ホバーで `Tooltip` によるフルパス表示）。十分な幅（260px）を確保し、画面圧縮による消失を防止。 |
+| **Prompt** | `Tag` or `Text` | 送信プロンプト（デフォルト `"continue"`）。ヘッダー折り返しを防止する幅（140px）を確保。 |
+| **Scheduled At** | `Typography.Text` | 予定時刻と相対時間（例: "2026-10-03 02:05 (in 2 hours)"）。幅: 200px。 |
+| **Retry** | `Typography.Text` | 試行状況（例: "1 / 6 回"。リトライ無効設定時は "–"）。幅: 110px。 |
+| **Actions** | `Space` of `Button`s | 「ログ詳細（View Logs）」「今すぐ実行（Run Now）」「キャンセル（Cancel）」「削除（Delete）」。幅: 160px、右端固定（`fixed: "right"`）。 |
+
+テーブル全体は `scroll={{ x: 1265 }}` により横スクロールに対応し、ウィンドウ幅が狭い場合でもカラムが潰れずに閲覧可能でなければならない（MUST）。また、全カラムヘッダーは `white-space: nowrap` により折り返しを防止しなければならない（MUST）。
 
 ### 2. ジョブ登録モーダル（Job Creation Modal）
 

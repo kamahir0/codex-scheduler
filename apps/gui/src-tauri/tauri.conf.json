@@ -27,7 +27,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "dmg",
+      "nsis"
+    ],
     "category": "DeveloperTool",
     "shortDescription": "Automated session resume scheduler for OpenAI Codex",
     "longDescription": "Scheduled prompt and session continuation tool for OpenAI Codex, designed for overnight usage limit resets.",

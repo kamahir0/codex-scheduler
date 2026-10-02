@@ -10,8 +10,8 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
 
 | OS | アーキテクチャ | ダウンロードファイル |
 | :--- | :--- | :--- |
-| **macOS (Apple Silicon)** | M1 / M2 / M3 / M4 | `Codex-Scheduler_<version>_aarch64.dmg` |
-| **Windows** | 64-bit | `Codex-Scheduler_<version>_x64-setup.exe` (または `.msi`) |
+| **macOS (Apple Silicon)** | M1 / M2 / M3 / M4 | `Codex-Scheduler-<version>-macos-arm64.dmg` |
+| **Windows** | 64-bit | `Codex-Scheduler-<version>-windows-x64.exe` |
 
 ---
 
@@ -52,7 +52,7 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
 
 ### Windows の場合
 
-1. ダウンロードした `.exe` または `.msi` ファイルをダブルクリックして実行します。
+1. ダウンロードした `.exe` ファイルをダブルクリックして実行します。
 2. 画面の指示に従ってインストールを完了します。
 
 #### 【重要】「Windows によって PC が保護されました」と表示された場合

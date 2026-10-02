@@ -16,11 +16,16 @@ GitHub Releasesを通じて、macOS（DMG）およびWindows（インストー�
 
 ### DELIVERY-BUNDLE-001: 配布パッケージ形式
 
-Tauriバンドラーは以下のターゲット形式を生成可能でなければならない（MUST）。
+ユーザー向け配布パッケージ形式は、一般ユーザーが迷わず直感的に選択できるよう、以下の2種類のみに厳格に限定しなければならない（MUST）。
 
-- **macOS**: `.dmg`（ドラッグ＆ドロップインストール可能なディスクイメージ）および `.app` バンドル。Apple Silicon (`aarch64` / M1〜M4) 対応。
-- **Windows**: `.exe`（NSIS インストーラ）および `.msi`（WiX インストーラ）。
-- **Linux** (オプション): `.AppImage` / `.deb`。
+- **macOS**: `.dmg`（ドラッグ＆ドロップインストール可能なディスクイメージ）。Apple Silicon（M1〜M4）対応。
+- **Windows**: `.exe`（NSIS インストーラ、64-bit対応）。
+
+#### 非公開・除外対象（Prohibited Assets）
+以下の形式は、ユーザー向けRelease assetとして公開してはならない（MUST NOT）。
+- `*.app.tar.gz`: 現状自動Updater機能を使用しておらず、ユーザーを混乱させるため公開禁止とする。
+- `*.msi`: WiXインストーラは保守コストおよび形式重複による選択迷いを防ぐため、NSIS `.exe` に一本化し、生成・公開対象から除外する。
+- Linux配布物: 現状サポート対象外。
 
 ### DELIVERY-BUNDLE-002: 常設Worker CLIの権限分離と固定パスプロビジョニング
 
@@ -44,7 +49,7 @@ Tauriバンドラーは以下のターゲット形式を生成可能でなけれ
 - `identifier`: `"dev.codexscheduler.app"`
 - `version`: リポジトリの最新セマンティックバージョニングと一致。
 - `bundle.active`: `true`
-- `bundle.targets`: `["dmg", "nsis", "msi", "appimage", "deb"]`
+- `bundle.targets`: `["dmg", "nsis"]`
 
 ### DELIVERY-BUNDLE-004: 完全無料（Apple Developerなし）配布とコード署名
 
@@ -61,25 +66,44 @@ Apple Developer Programの有償アカウントを使用しない完全無料オ
    - `git push` による `v*.*.*` タグの作成時。
    - `workflow_dispatch` による手動実行。
 2. **ビルドマトリクス**:
-   - `macos-latest` (macOS Apple Silicon / arm64)
-   - `windows-latest` (Windows x64)
+   - `macos-latest` (macOS Apple Silicon / `aarch64-apple-darwin`)
+   - `windows-latest` (Windows x64 / `x86_64-pc-windows-msvc`)
 3. **ビルド手順**:
    - Node.js 環境セットアップと依存関係キャッシュ。
    - Rust ツールチェーンのセットアップ。
    - フロントエンドのビルド（`npm run frontend:build`）。
-   - Tauri アプリおよび CLI バイナリのリリースビルド。
-4. **リリース公開**:
-   - 生成された `.dmg`, `.exe` / `.msi` ファイルを自動的に GitHub Releases のアセットとして添付・公開する。
+   - Worker CLI バイナリのビルドとリソースディレクトリへのステージング。
+   - Tauri アプリおよびインストーラのビルド。
+4. **リリース公開と成果物選別**:
+   - ビルド成果物から `DELIVERY-CI-002` で規定された命名規則に従ってリネームした `.dmg` および `.exe` の2ファイルのみを明示的に選別・アップロードしなければならない（MUST）。
+   - `*.app.tar.gz` や `*.msi` 等の不要な中間成果物が GitHub Releases に添付されてはならない（MUST NOT）。
 
 ### DELIVERY-CI-002: 成果物の命名規則
 
-生成されるリリースアセットは、OS・アーキテクチャが明瞭に判別できるファイル名でなければならない（SHOULD）。
-例:
-- `Codex-Scheduler_0.1.0_aarch64.dmg`
-- `Codex-Scheduler_0.1.0_x64-setup.exe`
+ユーザー向けRelease assetのファイル名は、以下の命名規則に完全準拠しなければならない（MUST）。
+
+```text
+<Product>-<version>-<os>-<arch>.<ext>
+```
+
+具体的には以下の2形式のみとする：
+- macOS: `Codex-Scheduler-<version>-macos-arm64.dmg`
+- Windows: `Codex-Scheduler-<version>-windows-x64.exe`
+
+（例: `Codex-Scheduler-0.2.2-macos-arm64.dmg`, `Codex-Scheduler-0.2.2-windows-x64.exe`）
+
+#### 命名トークン規則
+- OS識別子: macOSは `macos`、Windowsは `windows-x64` を使用する（MUST）。
+- アーキテクチャ識別子: Apple Siliconは `arm64` を使用する（MUST）。
+- 禁止トークン: ユーザー向けasset名に `osx`, `darwin`, `aarch64`, `x86_64`, `en-US`, `setup` を使用してはならない（MUST NOT）。
+- 内部ビルドターゲットとの分離: Rustのビルドターゲット（`aarch64-apple-darwin`, `x86_64-pc-windows-msvc`）は内部処理用として維持し、公開ファイル名には露出させない。
+
+### DELIVERY-CI-003: リリース本文との完全一致
+
+GitHub Releases のリリース本文（Release Body）に記載されるダウンロード案内・ファイル名は、実際に添付・公開されているアセットのファイル名と完全に一致していなければならない（MUST）。
 
 ## 検証ルール
 
-- `tauri.conf.json` の構文および `bundle` 設定が正しくパースされることを検証する。
-- `.github/workflows/release.yml` が GitHub Actions の構文要件を満たしていることを検証する。
-- CLIパス解決ロジックがバンドル内外の存在を正しく検出できることをテストする。
+- `tauri.conf.json` の構文および `bundle.targets` が `["dmg", "nsis"]` であることを検証する。
+- `.github/workflows/release.yml` が GitHub Actions の構文要件を満たし、選別されたファイルのみをアップロードしていることを検証する。
+- リリース本文とアセット命名規則の一致を検証する。

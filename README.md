@@ -23,8 +23,8 @@
 
 [GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) より最新インストーラを取得できます。
 
-- **macOS (Apple Silicon / M1〜M4)**: `Codex-Scheduler_<version>_aarch64.dmg`
-- **Windows (64-bit)**: `Codex-Scheduler_<version>_x64-setup.exe` (または `.msi`)
+- **macOS (Apple Silicon / M1〜M4)**: `Codex-Scheduler-<version>-macos-arm64.dmg`
+- **Windows (64-bit)**: `Codex-Scheduler-<version>-windows-x64.exe`
 
 インストール手順や権限付与の詳細は [インストール & 権限セットアップガイド](docs/setup-guide.md) をご覧ください。
 

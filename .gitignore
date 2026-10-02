@@ -1,0 +1,30 @@
+# Rust
+/target/
+
+# Node / frontend
+/node_modules/
+/apps/gui/node_modules/
+/apps/gui/dist/
+/apps/gui/.vite/
+
+# Tauri
+/apps/gui/src-tauri/target/
+/apps/gui/src-tauri/gen/
+
+# Data and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local environment
+.env
+.env.*
+!.env.example

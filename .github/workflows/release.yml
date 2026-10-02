@@ -48,6 +48,16 @@ jobs:
       - name: Build worker CLI binary
         run: cargo build --package codex-scheduler-cli --release --target ${{ matrix.target }}
 
+      - name: Stage worker CLI for bundle
+        shell: bash
+        run: |
+          mkdir -p apps/gui/src-tauri/resources
+          if [ "${{ matrix.platform }}" = "windows-x64" ]; then
+            cp target/${{ matrix.target }}/release/codex-scheduler-cli.exe apps/gui/src-tauri/resources/
+          else
+            cp target/${{ matrix.target }}/release/codex-scheduler-cli apps/gui/src-tauri/resources/
+          fi
+
       - name: Build Tauri Desktop Bundle
         uses: tauri-apps/tauri-action@v0
         env:

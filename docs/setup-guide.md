@@ -37,8 +37,15 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
   xattr -d com.apple.quarantine /Applications/Codex\ Scheduler.app
   ```
 
-#### 権限について
-- **スケジューラ登録**: ユーザー単位の LaunchAgent（`~/Library/LaunchAgents/`）を使用するため、管理者権限（sudo）は不要です。
+#### 権限について & 完全無料・Worker分離アーキテクチャ
+- **完全無料配布方針（Apple Developer登録不要）**:
+  - 本プロジェクトは、すべての開発者が完全無料で利用・配布できるよう、Apple Developer Program の有償アカウントを必須とせず、ad-hoc 署名（`signingIdentity: "-"`）でビルドされています。
+- **GUI と常設 Worker CLI の権限分離**:
+  - macOS の仕様上、有料の Apple Developer ID 署名がないアプリは、バージョンアップによって `.app` が置換されるとハッシュ値が変化し、macOS TCC（フォルダアクセス許可等）が再要求されてしまいます。
+  - この問題を根本から回避するため、Codex Scheduler では **「更新される GUI」と「常駐する Worker CLI」を分離** しています。
+  - 初回起動時、同梱の `codex-scheduler-cli` がユーザーの固定パス（`~/.local/share/codex-scheduler/bin/codex-scheduler-cli`）へ自動インストール（プロビジョニング）されます。
+  - macOS の `launchd`（LaunchAgent）にはこの固定 Worker パスが登録されるため、**GUI アプリ本体を新しい DMG で上書き更新しても、登録済みジョブや Worker に与えられたアクセス権限はリセットされず維持されます**。
+- **スケジューラ登録権限**: ユーザー単位の LaunchAgent（`~/Library/LaunchAgents/`）を使用するため、管理者権限（sudo）は不要です。
 - **プロジェクトフォルダへのアクセス**: 初回に作業ディレクトリを参照する際、macOSから「フォルダへのアクセスを求めています」とダイアログが出た場合は「許可」を選択してください。
 
 ---

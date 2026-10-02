@@ -50,3 +50,22 @@ async fn test_full_scheduler_workflow() {
     assert!(deleted);
     assert!(store.get_job(&job.id).unwrap().is_none());
 }
+
+#[tokio::test]
+async fn test_worker_provisioning_and_scheduler_integration() {
+    use codex_scheduler_core::worker::canonical_worker_path;
+
+    let canonical = canonical_worker_path();
+    assert!(canonical.to_string_lossy().contains("codex-scheduler"));
+
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = JobStore::new_with_path(store_dir.path().join("jobs.json"));
+
+    // Verify service uses worker path
+    let dummy_worker = store_dir.path().join("mock-worker");
+    std::fs::write(&dummy_worker, b"mock").unwrap();
+
+    let service = SchedulerService::new(store.clone(), dummy_worker.clone());
+    assert_eq!(service.cli_path(), dummy_worker.as_path());
+}
+

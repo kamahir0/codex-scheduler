@@ -30,6 +30,7 @@ pub struct SystemInfo {
     pub codex_installed: bool,
     pub codex_path: Option<String>,
     pub cli_worker_path: String,
+    pub cli_worker_installed: bool,
     pub jobs_store_path: String,
 }
 
@@ -95,10 +96,20 @@ fn delete_job(id: String, state: State<'_, AppState>) -> Result<bool, String> {
 async fn run_job_now(id: String, state: State<'_, AppState>) -> Result<Job, String> {
     let (store, cli_path) = {
         let service = state.service.lock().map_err(|e| e.to_string())?;
-        (service.store().clone(), PathBuf::from("codex-scheduler-cli"))
+        (service.store().clone(), service.cli_path().to_path_buf())
     };
     let service = SchedulerService::new(store, cli_path);
     service.execute_job(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn provision_worker(state: State<'_, AppState>) -> Result<String, String> {
+    let path = codex_scheduler_core::worker::ensure_worker_installed()
+        .map_err(|e| e.to_string())?;
+    let mut service = state.service.lock().map_err(|e| e.to_string())?;
+    let store = service.store().clone();
+    *service = SchedulerService::new(store, path.clone());
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -118,10 +129,8 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
         Err(_) => (false, None),
     };
 
-    let cli_worker_path = std::env::current_exe()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "codex-scheduler-cli".to_string());
-
+    let cli_worker_path = service.cli_path().to_string_lossy().to_string();
+    let cli_worker_installed = service.cli_path().is_file();
     let jobs_store_path = service.store().path().to_string_lossy().to_string();
 
     Ok(SystemInfo {
@@ -130,14 +139,16 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
         codex_installed,
         codex_path,
         cli_worker_path,
+        cli_worker_installed,
         jobs_store_path,
     })
 }
 
 pub fn run() {
     let store = JobStore::default_store().expect("Failed to initialize job store");
-    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-scheduler-cli"));
-    let service = SchedulerService::new(store, current_exe);
+    let worker_path = codex_scheduler_core::worker::ensure_worker_installed()
+        .unwrap_or_else(|_| codex_scheduler_core::worker::canonical_worker_path());
+    let service = SchedulerService::new(store, worker_path);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -151,7 +162,8 @@ pub fn run() {
             cancel_job,
             delete_job,
             run_job_now,
-            get_system_info
+            get_system_info,
+            provision_worker
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -39,7 +39,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [
+      "resources/**/*"
+    ],
     "macOS": {
+      "signingIdentity": "-",
       "frameworks": [],
       "minimumSystemVersion": "11.0",
       "dmg": {

@@ -22,15 +22,19 @@ Tauriバンドラーは以下のターゲット形式を生成可能でなけれ
 - **Windows**: `.exe`（NSIS インストーラ）および `.msi`（WiX インストーラ）。
 - **Linux** (オプション): `.AppImage` / `.deb`。
 
-### DELIVERY-BUNDLE-002: CLI Worker の同梱とパス解決
+### DELIVERY-BUNDLE-002: 常設Worker CLIの権限分離と固定パスプロビジョニング
 
-OSスケジューラ（`launchd` / `Task Scheduler`）から起動される `codex-scheduler-cli` は、エンドユーザー環境において以下の優先順序で安全に解決されなければならない（MUST）。
+頻繁に更新・置換されるGUIアプリ（`.app`）と、macOS/Windowsスケジューラからバックグラウンド実行される常設Worker（`codex-scheduler-cli`）を明確に分離しなければならない（MUST）。
 
-1. アプリケーションバンドル内のリソースディレクトリ（macOS: `Codex Scheduler.app/Contents/MacOS/codex-scheduler-cli` または `Resources/`）。
-2. アプリケーション実行バイナリと同一ディレクトリ。
-3. システムの `PATH`（`/usr/local/bin`, `~/.cargo/bin`, `~/.local/bin` 等）。
-
-ジョブ登録時、GUIアプリは解決されたCLIの絶対パスをOSスケジューラに渡し、アプリ外の独立起動を保証しなければならない。
+1. **固定Worker配置パス（Canonical Worker Path）**:
+   - macOS / Linux: `~/.local/share/codex-scheduler/bin/codex-scheduler-cli`
+   - Windows: `%LOCALAPPDATA%\codex-scheduler\bin\codex-scheduler-cli.exe`
+2. **自動プロビジョニング（Provisioning）**:
+   - GUIアプリは初回起動時または更新時、同梱バイナリ（アプリ内Resources、同一階層、またはシステムPATH）から上記固定Worker配置パスへバイナリを配置・コピーし、Unix系OSでは実行可能権限（`0o755`）を付与しなければならない（MUST）。
+   - 固定パスへの書き込みが制限される例外環境下では、検出された同梱バイナリまたはPATH上のバイナリへ安全にフォールバックしなければならない（SHOULD）。
+3. **OSスケジューラ登録**:
+   - `launchd` plist（macOS）および Task Scheduler（Windows）の `ProgramArguments` / コマンドラインには、必ずこの固定Workerパスの絶対パスを登録しなければならない（MUST）。GUIバイナリ自身（`current_exe`）を登録してはならない（MUST NOT）。
+   - これにより、GUIアプリ本体（`.app`）をDMG経由で上書き置換・更新しても、登録済みLaunchAgentジョブの実行パスおよびWorker CLIの権限状態を永続的に維持しなければならない。
 
 ### DELIVERY-BUNDLE-003: バンドルメタデータ
 
@@ -41,6 +45,13 @@ OSスケジューラ（`launchd` / `Task Scheduler`）から起動される `cod
 - `version`: リポジトリの最新セマンティックバージョニングと一致。
 - `bundle.active`: `true`
 - `bundle.targets`: `["dmg", "nsis", "msi", "appimage", "deb"]`
+
+### DELIVERY-BUNDLE-004: 完全無料（Apple Developerなし）配布とコード署名
+
+Apple Developer Programの有償アカウントを使用しない完全無料オープンソース配布方針において、以下を満たさなければならない（MUST）。
+
+1. **macOSコード署名**: `tauri.conf.json` の `bundle.macOS.signingIdentity` は `"-"`（ad-hoc署名）を明示指定し、Apple Siliconにおける実行拒否を防止する。
+2. **権限責任の局所化**: 毎回ハッシュ値が変化しTCC権限が引き継がれないGUI本体にはファイルアクセス権限を恒久要求する処理を持たせず、固定パスに永続常駐するWorker CLI側に実行権限を寄せる。
 
 ### DELIVERY-CI-001: GitHub Actions 自動リリースパイプライン
 

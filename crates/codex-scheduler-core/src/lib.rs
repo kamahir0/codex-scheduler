@@ -3,6 +3,7 @@ pub mod models;
 pub mod os_scheduler;
 pub mod retry;
 pub mod store;
+pub mod worker;
 
 use adapter::codex::CodexAdapter;
 use adapter::ExecutionResult;
@@ -10,7 +11,7 @@ use chrono::Utc;
 use models::{ExecutionAttempt, Job, JobStatus, ProviderType};
 use os_scheduler::get_platform_scheduler;
 use retry::{NextAction, RetryEngine};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use store::{JobStore, StoreError};
 use thiserror::Error;
 
@@ -40,12 +41,17 @@ impl SchedulerService {
 
     pub fn default_service() -> Result<Self, CoreError> {
         let store = JobStore::default_store()?;
-        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-scheduler-cli"));
-        Ok(Self::new(store, current_exe))
+        let worker_path = worker::ensure_worker_installed()
+            .unwrap_or_else(|_| worker::canonical_worker_path());
+        Ok(Self::new(store, worker_path))
     }
 
     pub fn store(&self) -> &JobStore {
         &self.store
+    }
+
+    pub fn cli_path(&self) -> &Path {
+        &self.cli_path
     }
 
     pub fn schedule_job(

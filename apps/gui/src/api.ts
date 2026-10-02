@@ -168,7 +168,17 @@ export async function getSystemInfo(): Promise<SystemInfo> {
     default_cwd: "/Users/mahirohiratsuka/develop",
     codex_installed: true,
     codex_path: "/opt/homebrew/bin/codex",
-    cli_worker_path: "/usr/local/bin/codex-scheduler-cli",
+    cli_worker_path: "~/.local/share/codex-scheduler/bin/codex-scheduler-cli",
+    cli_worker_installed: true,
     jobs_store_path: "~/.codex-scheduler/jobs.json",
   };
 }
+
+export async function provisionWorker(): Promise<string> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string>("provision_worker");
+  }
+  return "~/.local/share/codex-scheduler/bin/codex-scheduler-cli";
+}
+

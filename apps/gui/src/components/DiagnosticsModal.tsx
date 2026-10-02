@@ -73,7 +73,14 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
             {systemInfo.codex_path || "None"}
           </Text>
         </Descriptions.Item>
-        <Descriptions.Item label="スケジューラ Worker パス">
+        <Descriptions.Item label="常設 Worker CLI 状態">
+          {systemInfo.cli_worker_installed ? (
+            <Tag color="green">常駐配置済 (Ready)</Tag>
+          ) : (
+            <Tag color="red">未配置 (Not Installed)</Tag>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="常設 Worker パス">
           <Text copyable style={{ fontSize: 12, fontFamily: "monospace" }}>
             {systemInfo.cli_worker_path}
           </Text>
@@ -94,9 +101,10 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
 
       <div style={{ marginTop: 20, padding: 12, background: "rgba(0,0,0,0.02)", borderRadius: 6 }}>
         <Paragraph style={{ margin: 0, fontSize: 12, color: "#8c8c8c" }}>
-          ※ アプリケーションは GitHub Releases からダウンロードした DMG またはインストーラによって導入されます。
-          初回起動時の Gatekeeper 警告やプロジェクトフォルダへのアクセス許可については、
-          同梱の <strong>セットアップガイド（docs/setup-guide.md）</strong> を参照してください。
+          ※ <strong>完全無料配布・権限維持アーキテクチャ</strong>:
+          本アプリは Apple Developer Program 有償登録なしで利用できるよう、GUI 本体（更新・置換対象）と常設 Worker CLI（固定パス永続化）を権限分離しています。
+          GUI をアップデート置換しても既存の登録ジョブや macOS TCC 権限は維持されます。
+          初回起動時の Gatekeeper 警告等については、<strong>セットアップガイド（docs/setup-guide.md）</strong> を参照してください。
         </Paragraph>
       </div>
     </Modal>

@@ -57,5 +57,7 @@ export interface SystemInfo {
   codex_installed: boolean;
   codex_path: string | null;
   cli_worker_path: string;
+  cli_worker_installed: boolean;
   jobs_store_path: string;
 }
+

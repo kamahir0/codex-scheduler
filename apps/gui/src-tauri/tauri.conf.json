@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "Codex Scheduler",
-        "width": 1100,
-        "height": 720,
-        "minWidth": 800,
-        "minHeight": 550,
+        "width": 1140,
+        "height": 740,
+        "minWidth": 960,
+        "minHeight": 620,
         "resizable": true
       }
     ],

@@ -43,14 +43,16 @@ Ant Design の `Layout` コンポーネントを使用し、デスクトップ�
 
 ## テーマとスタイル
 
-- **Ant Design `ConfigProvider`**:
-  - デフォルトを洗練された **Dark Theme** (`theme.darkAlgorithm`) とし、開発者に馴染みのあるダークエディタライクな配色を採用。
-  - Primary Color: `#1677ff` (Ant Design Blue) または `#6366f1` (Modern Indigo)。
-  - `borderRadius`: `8px` でモダンで柔らかい角丸。
-  - 背景色、ボーダー、カードの陰影は Ant Design のトークンシステム（Design Tokens）を活用。
+- **テーマ設定（3択化）**:
+  - **システム設定に従う (`system`)**: OSの `prefers-color-scheme` にリアルタイムで追従（初期デフォルト）。
+  - **ライトモード (`light`)**: 明るい背景 (`theme.defaultAlgorithm`)。
+  - **ダークモード (`dark`)**: ダークエディタ配色 (`theme.darkAlgorithm`)。
+  - ヘッダーのテーマアイコンにマウスホバーすると3択メニューが現れ、ワンクリックで設定を切り替え可能。選択内容は `localStorage` に永続化される。
+- **カーソル管理とインタラクション品質**:
+  - クリック可能なボタン・操作リンクのみ `cursor: pointer` とし、情報表示カード（`MetricCards`）やタイトル・バナー等の静的領域で誤認を招く指マークを表示しない（MUST NOT）。
 
 ## 操作（Interactions）
 
 - 「+ 新規ジョブ登録」ボタンをクリックすると、ジョブ作成モーダル（`Modal`）が開く。
-- テーマ切り替えボタンを押すと、画面全体のテーマが瞬時に切り替わり、ローカルストレージに記憶される。
+- テーマ切り替えドロップダウンから選択すると、画面全体のテーマが瞬時に切り替わり、ローカルストレージに記憶される。
 - 各種操作（作成、キャンセル、削除、手動実行）実行時は、Ant Design の `message.success` や `notification` でフィードバックを行う。

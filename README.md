@@ -34,9 +34,13 @@
   - [Codex プロバイダアダプタ (`CODEX-RESUME`)](docs/specs/codex-adapter.md)
   - [リトライポリシー (`RETRY-POLICY`)](docs/specs/retry-policy.md)
   - [OSスケジューラ連携 (`OS-SCHED`)](docs/specs/os-scheduler.md)
+  - [デスクトップ配布・パッケージング (`DELIVERY-BUNDLE`)](docs/specs/desktop-delivery.md)
 - **GUI仕様**:
   - [アプリケーションシェル](docs/gui/app-shell.md)
   - [ジョブ管理テーブル・モーダル・ログ](docs/gui/job-scheduling.md)
+  - [環境診断・権限セットアップ](docs/gui/setup-and-diagnostics.md)
+- **ユーザー向けガイド**:
+  - [インストール & 権限セットアップガイド](docs/setup-guide.md)
 - **設計決定記録（ADR）**:
   - [ADR 0001: Tauri 2 と OSスケジューラによるヘッドレス実行](docs/adr/0001-tauri-and-os-scheduler-architecture.md)
   - [ADR 0002: Ant Design によるモダンUIシステム](docs/adr/0002-ant-design-frontend-ui.md)

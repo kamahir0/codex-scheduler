@@ -27,6 +27,10 @@ pub struct CreateJobPayload {
 pub struct SystemInfo {
     pub os: String,
     pub default_cwd: String,
+    pub codex_installed: bool,
+    pub codex_path: Option<String>,
+    pub cli_worker_path: String,
+    pub jobs_store_path: String,
 }
 
 #[tauri::command]
@@ -89,7 +93,6 @@ fn delete_job(id: String, state: State<'_, AppState>) -> Result<bool, String> {
 
 #[tauri::command]
 async fn run_job_now(id: String, state: State<'_, AppState>) -> Result<Job, String> {
-    // Clone necessary info from state
     let (store, cli_path) = {
         let service = state.service.lock().map_err(|e| e.to_string())?;
         (service.store().clone(), PathBuf::from("codex-scheduler-cli"))
@@ -99,14 +102,35 @@ async fn run_job_now(id: String, state: State<'_, AppState>) -> Result<Job, Stri
 }
 
 #[tauri::command]
-fn get_system_info() -> Result<SystemInfo, String> {
+fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
+    let service = state.service.lock().map_err(|e| e.to_string())?;
     let default_cwd = dirs::home_dir()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|| "/".to_string());
 
+    let adapter = codex_scheduler_core::adapter::codex::CodexAdapter::new();
+    let codex_res = adapter.resolve_executable();
+    let (codex_installed, codex_path) = match codex_res {
+        Ok(p) => {
+            let exists = p.exists() || p.to_string_lossy() == "codex";
+            (exists, Some(p.to_string_lossy().to_string()))
+        }
+        Err(_) => (false, None),
+    };
+
+    let cli_worker_path = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "codex-scheduler-cli".to_string());
+
+    let jobs_store_path = service.store().path().to_string_lossy().to_string();
+
     Ok(SystemInfo {
         os: std::env::consts::OS.to_string(),
         default_cwd,
+        codex_installed,
+        codex_path,
+        cli_worker_path,
+        jobs_store_path,
     })
 }
 

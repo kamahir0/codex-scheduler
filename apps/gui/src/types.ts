@@ -54,4 +54,8 @@ export interface CreateJobPayload {
 export interface SystemInfo {
   os: string;
   default_cwd: string;
+  codex_installed: boolean;
+  codex_path: string | null;
+  cli_worker_path: string;
+  jobs_store_path: string;
 }

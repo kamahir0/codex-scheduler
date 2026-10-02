@@ -1,0 +1,75 @@
+name: Release Desktop Applications
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - platform: macos-x64
+            os: macos-13
+            target: x86_64-apple-darwin
+          - platform: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run frontend:build
+
+      - name: Build worker CLI binary
+        run: cargo build --package codex-scheduler-cli --release --target ${{ matrix.target }}
+
+      - name: Build Tauri Desktop Bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: "./apps/gui"
+          tagName: ${{ github.ref_name }}
+          releaseName: "Codex Scheduler ${{ github.ref_name }}"
+          releaseBody: |
+            ## Codex Scheduler ${{ github.ref_name }}
+            
+            AIコーディングツール（Codex）利用枠リセット時 自動再開デスクトップツール
+            
+            ### インストール方法
+            - **macOS (Apple Silicon / M1, M2, M3, M4)**: `Codex-Scheduler_${{ github.ref_name }}_aarch64.dmg`
+            - **macOS (Intel)**: `Codex-Scheduler_${{ github.ref_name }}_x64.dmg`
+            - **Windows (64-bit)**: `Codex-Scheduler_${{ github.ref_name }}_x64-setup.exe` (または `.msi`)
+            
+            インストール後の起動・権限設定は [セットアップガイド](https://github.com/${{ github.repository }}/blob/main/docs/setup-guide.md) をご覧ください。
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }}

@@ -166,5 +166,9 @@ export async function getSystemInfo(): Promise<SystemInfo> {
   return {
     os: "macos",
     default_cwd: "/Users/mahirohiratsuka/develop",
+    codex_installed: true,
+    codex_path: "/opt/homebrew/bin/codex",
+    cli_worker_path: "/usr/local/bin/codex-scheduler-cli",
+    jobs_store_path: "~/.codex-scheduler/jobs.json",
   };
 }

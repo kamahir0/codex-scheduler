@@ -8,6 +8,7 @@ import {
   theme,
   Tag,
   Tooltip,
+  Alert,
   message,
 } from "antd";
 import {
@@ -16,6 +17,7 @@ import {
   Sun,
   RefreshCw,
   Cpu,
+  ShieldCheck,
 } from "lucide-react";
 import { Job, CreateJobPayload, SystemInfo } from "./types";
 import {
@@ -30,6 +32,7 @@ import { MetricCards } from "./components/MetricCards";
 import { JobTable } from "./components/JobTable";
 import { CreateJobModal } from "./components/CreateJobModal";
 import { LogsDrawer } from "./components/LogsDrawer";
+import { DiagnosticsModal } from "./components/DiagnosticsModal";
 
 const { Header, Content } = Layout;
 const { Title, Text } = Typography;
@@ -39,6 +42,7 @@ export const App: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [selectedJobForLogs, setSelectedJobForLogs] = useState<Job | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
 
@@ -163,6 +167,19 @@ export const App: React.FC = () => {
               />
             </Tooltip>
 
+            <Tooltip title="システム環境 & 権限診断">
+              <Button
+                type="text"
+                icon={
+                  <ShieldCheck
+                    size={16}
+                    color={systemInfo?.codex_installed ? "#52c41a" : "#faad14"}
+                  />
+                }
+                onClick={() => setDiagnosticsOpen(true)}
+              />
+            </Tooltip>
+
             <Tooltip title={isDarkMode ? "ライトモードに切替" : "ダークモードに切替"}>
               <Button
                 type="text"
@@ -183,6 +200,21 @@ export const App: React.FC = () => {
         </Header>
 
         <Content style={{ padding: "20px 24px", maxWidth: 1400, margin: "0 auto", width: "100%" }}>
+          {systemInfo && !systemInfo.codex_installed && (
+            <Alert
+              message="OpenAI Codex CLI が検出されませんでした"
+              description="夜間の自動再開を実行するには、システムに codex コマンドがインストールされ、PATHが設定されている必要があります。"
+              type="warning"
+              showIcon
+              action={
+                <Button size="small" type="primary" onClick={() => setDiagnosticsOpen(true)}>
+                  セットアップ診断・手順
+                </Button>
+              }
+              style={{ marginBottom: 16 }}
+            />
+          )}
+
           <MetricCards jobs={jobs} />
 
           <div
@@ -219,6 +251,12 @@ export const App: React.FC = () => {
           open={modalOpen}
           onCancel={() => setModalOpen(false)}
           onSubmit={handleCreateJob}
+          systemInfo={systemInfo}
+        />
+
+        <DiagnosticsModal
+          open={diagnosticsOpen}
+          onClose={() => setDiagnosticsOpen(false)}
           systemInfo={systemInfo}
         />
 

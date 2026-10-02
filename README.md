@@ -21,7 +21,7 @@
 
 ## 仕様駆動開発（Specification-Driven Development）
 
-本プロジェクトは [`masterdata`](https://github.com/...) と同様の厳格な仕様駆動開発（Specification-Driven Development）を採用しています。
+本プロジェクトは [`masterdata`](https://github.com/kamahir0/masterdata) と同様の厳格な仕様駆動開発（Specification-Driven Development）を採用しています。
 
 - **操作カーネル**: [`AGENTS.md`](AGENTS.md)
 - **開発ワークフロー**: [`docs/execution-workflow.md`](docs/execution-workflow.md)

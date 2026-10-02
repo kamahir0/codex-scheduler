@@ -6,7 +6,7 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
 
 ## 1. ダウンロード
 
-[GitHub Releases](https://github.com/...) の最新リリース（Latest Release）ページから、ご使用のOSに合ったインストーラをダウンロードします。
+[GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) の最新リリース（Latest Release）ページから、ご使用のOSに合ったインストーラをダウンロードします。
 
 | OS | アーキテクチャ | ダウンロードファイル |
 | :--- | :--- | :--- |

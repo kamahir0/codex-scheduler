@@ -16,7 +16,6 @@ import {
   Moon,
   Sun,
   RefreshCw,
-  Cpu,
   ShieldCheck,
 } from "lucide-react";
 import { Job, CreateJobPayload, SystemInfo } from "./types";
@@ -131,20 +130,16 @@ export const App: React.FC = () => {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div
+            <img
+              src="/app-icon.png"
+              alt="Codex Scheduler Logo"
               style={{
-                width: 34,
-                height: 34,
-                borderRadius: 8,
-                background: "linear-gradient(135deg, #1677ff 0%, #6366f1 100%)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#fff",
+                width: 36,
+                height: 36,
+                objectFit: "contain",
+                filter: "drop-shadow(0 2px 5px rgba(0,0,0,0.2))",
               }}
-            >
-              <Cpu size={20} />
-            </div>
+            />
             <div>
               <Title level={4} style={{ margin: 0, lineHeight: 1.2, fontWeight: 700 }}>
                 Codex Scheduler

@@ -35,7 +35,8 @@ Ant Design の `Modal` と `Form` を使用し、直感的でミスのない入�
 4. **Prompt**:
    - `Input`（デフォルト値: `"continue"`、プレースホルダ: `"continue"`）。
 5. **Scheduled Time (実行日時)**:
-   - `DatePicker showTime`（秒単位または分単位指定）。
+   - `DatePicker showTime`（分単位指定）。
+   - **初期値**: モーダル表示時の現在時刻から分以下を切り捨てて0分とし、その1時間先の時刻（例: 07:48起動時は 08:00）を自動設定する（MUST）。
    - クイック選択タグ (`Space`):
      - 「30分後」
      - 「1時間後」

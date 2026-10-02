@@ -38,7 +38,8 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
   useEffect(() => {
     if (open) {
       const now = dayjs();
-      const defaultTarget = now.add(1, "hour").second(0);
+      // 分以下を切り捨てて0分にし、その1時間先の時刻
+      const defaultTarget = now.startOf("hour").add(1, "hour");
 
       form.setFieldsValue({
         provider: "codex",

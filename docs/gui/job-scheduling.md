@@ -19,7 +19,7 @@ Ant Design の `Table` コンポーネントを用い、以下のカラム構成
 | **Working Directory** | `Typography.Text ellipsis` | プロジェクトパス（ホバーで `Tooltip` によるフルパス表示）。 |
 | **Prompt** | `Tag` or `Text` | 送信プロンプト（デフォルト `"continue"`）。 |
 | **Scheduled At** | `Typography.Text` | 予定時刻と相対時間（例: "2026-10-03 02:05 (in 2 hours)"）。 |
-| **Retry** | `Progress` or `Tag` | 試行状況（例: "Attempt 1/6"、プログレスバーまたはタグ）。 |
+| **Retry** | `Typography.Text` | 試行状況（例: "1 / 6 回"。リトライ無効設定時は "–"）。 |
 | **Actions** | `Space` of `Button`s | 「ログ詳細（View Logs）」「今すぐ実行（Run Now）」「キャンセル（Cancel）」「削除（Delete）」 |
 
 ### 2. ジョブ登録モーダル（Job Creation Modal）

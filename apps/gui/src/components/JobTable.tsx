@@ -36,26 +36,49 @@ export const JobTable: React.FC<JobTableProps> = ({
   const getStatusBadge = (status: JobStatus) => {
     switch (status) {
       case "scheduled":
-        return <Badge status="processing" text={<Tag color="blue">待機中 (Scheduled)</Tag>} />;
+        return (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, lineHeight: 1 }}>
+            <Badge status="processing" />
+            <Tag color="blue" style={{ margin: 0 }}>待機中 (Scheduled)</Tag>
+          </span>
+        );
       case "running":
         return (
-          <Badge
-            status="warning"
-            text={
-              <Tag color="gold" icon={<RefreshCw size={12} className="spin-icon" />}>
-                実行中 (Running)
-              </Tag>
-            }
-          />
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, lineHeight: 1 }}>
+            <Badge status="warning" />
+            <Tag color="gold" icon={<RefreshCw size={12} className="spin-icon" style={{ verticalAlign: -1 }} />} style={{ margin: 0 }}>
+              実行中 (Running)
+            </Tag>
+          </span>
         );
       case "retrying":
-        return <Badge status="warning" text={<Tag color="orange">リトライ待機中</Tag>} />;
+        return (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, lineHeight: 1 }}>
+            <Badge status="warning" />
+            <Tag color="orange" style={{ margin: 0 }}>リトライ待機中</Tag>
+          </span>
+        );
       case "succeeded":
-        return <Badge status="success" text={<Tag color="green">成功 (Succeeded)</Tag>} />;
+        return (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, lineHeight: 1 }}>
+            <Badge status="success" />
+            <Tag color="green" style={{ margin: 0 }}>成功 (Succeeded)</Tag>
+          </span>
+        );
       case "failed":
-        return <Badge status="error" text={<Tag color="red">失敗 (Failed)</Tag>} />;
+        return (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, lineHeight: 1 }}>
+            <Badge status="error" />
+            <Tag color="red" style={{ margin: 0 }}>失敗 (Failed)</Tag>
+          </span>
+        );
       case "cancelled":
-        return <Badge status="default" text={<Tag color="default">取消済 (Cancelled)</Tag>} />;
+        return (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, lineHeight: 1 }}>
+            <Badge status="default" />
+            <Tag color="default" style={{ margin: 0 }}>取消済 (Cancelled)</Tag>
+          </span>
+        );
     }
   };
 
@@ -64,7 +87,7 @@ export const JobTable: React.FC<JobTableProps> = ({
       title: "ステータス",
       dataIndex: "status",
       key: "status",
-      width: 170,
+      width: 185,
       render: (status: JobStatus) => getStatusBadge(status),
       filters: [
         { text: "待機中", value: "scheduled" },
@@ -168,6 +191,9 @@ export const JobTable: React.FC<JobTableProps> = ({
       key: "attempts",
       width: 110,
       render: (_, record) => {
+        if (!record.retry_policy.enabled) {
+          return <Text type="secondary" style={{ fontSize: 14 }}>–</Text>;
+        }
         const current = record.execution_history.length;
         const max = record.retry_policy.max_attempts;
         return (

@@ -18,7 +18,7 @@ GitHub Releasesを通じて、macOS（DMG）およびWindows（インストー�
 
 Tauriバンドラーは以下のターゲット形式を生成可能でなければならない（MUST）。
 
-- **macOS**: `.dmg`（ドラッグ＆ドロップインストール可能なディスクイメージ）および `.app` バンドル。Apple Silicon (`aarch64`) および Intel (`x86_64`) 両対応。
+- **macOS**: `.dmg`（ドラッグ＆ドロップインストール可能なディスクイメージ）および `.app` バンドル。Apple Silicon (`aarch64` / M1〜M4) 対応。
 - **Windows**: `.exe`（NSIS インストーラ）および `.msi`（WiX インストーラ）。
 - **Linux** (オプション): `.AppImage` / `.deb`。
 
@@ -50,7 +50,7 @@ OSスケジューラ（`launchd` / `Task Scheduler`）から起動される `cod
    - `git push` による `v*.*.*` タグの作成時。
    - `workflow_dispatch` による手動実行。
 2. **ビルドマトリクス**:
-   - `macos-latest` (macOS arm64 / x64)
+   - `macos-latest` (macOS Apple Silicon / arm64)
    - `windows-latest` (Windows x64)
 3. **ビルド手順**:
    - Node.js 環境セットアップと依存関係キャッシュ。
@@ -65,7 +65,6 @@ OSスケジューラ（`launchd` / `Task Scheduler`）から起動される `cod
 生成されるリリースアセットは、OS・アーキテクチャが明瞭に判別できるファイル名でなければならない（SHOULD）。
 例:
 - `Codex-Scheduler_0.1.0_aarch64.dmg`
-- `Codex-Scheduler_0.1.0_x64.dmg`
 - `Codex-Scheduler_0.1.0_x64-setup.exe`
 
 ## 検証ルール

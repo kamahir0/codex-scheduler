@@ -11,7 +11,6 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
 | OS | アーキテクチャ | ダウンロードファイル |
 | :--- | :--- | :--- |
 | **macOS (Apple Silicon)** | M1 / M2 / M3 / M4 | `Codex-Scheduler_<version>_aarch64.dmg` |
-| **macOS (Intel)** | Intel Core | `Codex-Scheduler_<version>_x64.dmg` |
 | **Windows** | 64-bit | `Codex-Scheduler_<version>_x64-setup.exe` (または `.msi`) |
 
 ---

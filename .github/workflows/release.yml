@@ -20,9 +20,6 @@ jobs:
           - platform: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
-          - platform: macos-x64
-            os: macos-latest
-            target: x86_64-apple-darwin
           - platform: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -66,7 +63,6 @@ jobs:
             
             ### インストール方法
             - **macOS (Apple Silicon / M1, M2, M3, M4)**: `Codex-Scheduler_${{ github.ref_name }}_aarch64.dmg`
-            - **macOS (Intel)**: `Codex-Scheduler_${{ github.ref_name }}_x64.dmg`
             - **Windows (64-bit)**: `Codex-Scheduler_${{ github.ref_name }}_x64-setup.exe` (または `.msi`)
             
             インストール後の起動・権限設定は [セットアップガイド](https://github.com/${{ github.repository }}/blob/main/docs/setup-guide.md) をご覧ください。

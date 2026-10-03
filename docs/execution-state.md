@@ -1,14 +1,14 @@
 # Development State
 
 Stage: decision-required
-Candidate: 52b05ad9bee43040ea344130eaf759ca8f96a215
-Work base: 1b3fd938aa99e2dfa9ffdc75f4692ab8a66a2349
+Candidate: f555f4478906c9cd3e1ce2cb6c21b52815778590
+Work base: 6d5b2b496a596cb9498356172ad64d5f9b37963a
 
 ## Active work
 
-- Completed: Reproduction test, platform-aware launcher resolution, Windows PATH handling, child process acceptance test, spec-change 0017 application, docs update, local checks, Windows CI acceptance pass.
+- Completed: PATH implementation alignment with std::env::split_paths/join_paths (removal of lossy UTF conversion and custom path functions), test_windows_path_augmentation with non-ASCII and space preservation checks, strengthened acceptance test with rustc helper.exe for exact argv and CWD verification, injection sentinel marker non-creation assertion, execute_tick E2E verification, scoped environment guards with mutex protection, local verification (check-all, windows target check), remote CI verification green (Windows child process acceptance test passed), release patch dry-run confirmed (v0.5.0 -> v0.5.1).
 - In progress: None.
-- Remaining: Human Release Gate review for v0.5.1 release approval.
+- Remaining: Human Release Gate review and release authorization for v0.5.1 hotfix.
 
 ## Blocking findings
 
@@ -17,5 +17,5 @@ None.
 ## Human decision needed
 
 Human Release Gate approval for v0.5.1 hotfix release.
-All technical verification (local check-all, Windows CI child process acceptance, cross-platform checks, release dry-run) has passed.
+All technical verification (local check-all, Windows CI child process acceptance with exact argv and injection sentinel assertion, cross-platform checks, release dry-run) has passed.
 Explicit Human approval is required before creating git tag, publishing GitHub Release, or running `cargo xtask release patch`.

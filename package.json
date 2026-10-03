@@ -1,18 +1,18 @@
 {
   "name": "codex-scheduler",
   "private": true,
-  "version": "0.2.1",
+  "scripts": {
+    "frontend:build": "npm --workspace @codex-scheduler/gui run build",
+    "frontend:lint": "npm --workspace @codex-scheduler/gui run lint",
+    "gui:build": "npm --workspace @codex-scheduler/gui run tauri -- build",
+    "gui:dev": "npm --workspace @codex-scheduler/gui run tauri -- dev",
+    "release": "cargo xtask release",
+    "release:major": "cargo xtask release major",
+    "release:minor": "cargo xtask release minor",
+    "release:patch": "cargo xtask release patch"
+  },
+  "version": "0.2.2",
   "workspaces": [
     "apps/gui"
-  ],
-  "scripts": {
-    "release": "cargo xtask release",
-    "release:patch": "cargo xtask release patch",
-    "release:minor": "cargo xtask release minor",
-    "release:major": "cargo xtask release major",
-    "frontend:lint": "npm --workspace @codex-scheduler/gui run lint",
-    "frontend:build": "npm --workspace @codex-scheduler/gui run build",
-    "gui:dev": "npm --workspace @codex-scheduler/gui run tauri -- dev",
-    "gui:build": "npm --workspace @codex-scheduler/gui run tauri -- build"
-  }
+  ]
 }

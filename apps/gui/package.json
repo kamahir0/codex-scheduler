@@ -1,14 +1,4 @@
 {
-  "name": "@codex-scheduler/gui",
-  "private": true,
-  "version": "0.2.1",
-  "type": "module",
-  "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
-    "lint": "tsc --noEmit",
-    "tauri": "tauri"
-  },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.7.3",
@@ -25,5 +15,15 @@
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
-  }
+  },
+  "name": "@codex-scheduler/gui",
+  "private": true,
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "lint": "tsc --noEmit",
+    "tauri": "tauri"
+  },
+  "type": "module",
+  "version": "0.2.2"
 }

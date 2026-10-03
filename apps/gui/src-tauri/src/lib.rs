@@ -55,6 +55,7 @@ pub struct SystemInfo {
     pub scheduler_ready: bool,
     pub scheduler_path_matched: bool,
     pub scheduler_error: Option<String>,
+    pub scheduler_owner: String,
     pub jobs_store_path: String,
     // Backward compatibility fields for UI
     pub cli_worker_path: String,
@@ -160,6 +161,7 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
     let scheduler_installed = service.is_scheduler_installed();
     let scheduler_ready = service.is_scheduler_ready();
     let scheduler_path_matched = service.is_scheduler_path_matched();
+    let scheduler_owner = service.get_scheduler_owner().to_string();
     let scheduler_error = state.scheduler_error.lock().ok().and_then(|e| e.clone());
     let jobs_store_path = service.store().path().to_string_lossy().to_string();
 
@@ -172,6 +174,7 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
         scheduler_installed,
         scheduler_ready,
         scheduler_path_matched,
+        scheduler_owner,
         scheduler_error,
         jobs_store_path,
         cli_worker_path: scheduler_executable_path,

@@ -105,6 +105,17 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
             <Tag color="orange">未登録 (起動時またはジョブ作成時に自動登録)</Tag>
           )}
         </Descriptions.Item>
+        <Descriptions.Item label="スケジューラ所有権">
+          {systemInfo.scheduler_owner === "desktop" ? (
+            <Tag color="blue">Desktop アプリ所有 (優先)</Tag>
+          ) : systemInfo.scheduler_owner === "cli" ? (
+            <Tag color="cyan">CLI 所有 (Desktop起動時に安全に移行可能)</Tag>
+          ) : systemInfo.scheduler_owner === "legacy" ? (
+            <Tag color="orange">旧形式 (自動移行対象)</Tag>
+          ) : (
+            <Tag color="default">{systemInfo.scheduler_owner || "未登録"}</Tag>
+          )}
+        </Descriptions.Item>
         <Descriptions.Item label="スケジューラ稼働準備状態">
           {systemInfo.scheduler_ready ? (
             <Tag color="green">準備完了 (Ready / Loaded)</Tag>
@@ -135,8 +146,8 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
 
       <div style={{ marginTop: 20, padding: 12, background: "rgba(0,0,0,0.02)", borderRadius: 6 }}>
         <Paragraph style={{ margin: 0, fontSize: 12, color: "#8c8c8c" }}>
-          ※ <strong>バックグラウンド通知抑制 & シングル実行ファイルアーキテクチャ</strong>:
-          LaunchAgent は別バイナリではなく、現在起動中のアプリ本体をヘッドレスモード（<code>--scheduler-tick</code>）で起動します。これにより、初回起動時にアプリを1回許可するだけでバックグラウンド実行に対する追加の Gatekeeper 警告を防ぎ、ジョブ追加ごとの通知も発生しません。
+          ※ <strong>バックグラウンド実行 & スケジューラ所有権</strong>:
+          macOS では単一の LaunchAgent（<code>dev.codexscheduler.scheduler</code>）により毎分ヘッドレス定期実行されます。アプリ本体を直接ヘッドレスモード（<code>--scheduler-tick</code>）で起動することで追加の Gatekeeper 警告を防ぎます。Desktop アプリと standalone CLI が共存する場合でも、OSスケジューラは常に1つに保たれ、Desktop アプリが優先して所有します。
         </Paragraph>
       </div>
     </Modal>

@@ -61,6 +61,7 @@ export interface SystemInfo {
   scheduler_ready: boolean;
   scheduler_path_matched: boolean;
   scheduler_error: string | null;
+  scheduler_owner?: string;
   jobs_store_path: string;
   cli_worker_path: string;
   cli_worker_installed: boolean;

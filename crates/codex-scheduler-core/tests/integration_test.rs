@@ -4,6 +4,31 @@ use codex_scheduler_core::store::JobStore;
 use codex_scheduler_core::SchedulerService;
 use std::path::PathBuf;
 
+struct ReadyMockScheduler;
+impl codex_scheduler_core::os_scheduler::SchedulerBackend for ReadyMockScheduler {
+    fn ensure_scheduler_installed(&self, _path: &std::path::Path) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
+        Ok(())
+    }
+    fn is_scheduler_installed(&self) -> bool {
+        true
+    }
+    fn is_scheduler_ready(&self) -> bool {
+        true
+    }
+    fn is_scheduler_path_matched(&self, _path: &std::path::Path) -> bool {
+        true
+    }
+    fn uninstall_scheduler(&self) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
+        Ok(())
+    }
+    fn register_job(&self, _job: &codex_scheduler_core::models::Job, _path: &std::path::Path) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
+        Ok(())
+    }
+    fn unregister_job(&self, _job_id: &str) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn test_full_scheduler_workflow() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -13,7 +38,7 @@ async fn test_full_scheduler_workflow() {
     let service = SchedulerService::with_scheduler(
         store.clone(),
         Some(PathBuf::from("codex-scheduler-cli")),
-        Box::new(codex_scheduler_core::os_scheduler::FallbackScheduler),
+        Box::new(ReadyMockScheduler),
     );
 
     // 1. Schedule a job
@@ -81,7 +106,7 @@ async fn test_tick_due_and_future_jobs_filter() {
     let service = SchedulerService::with_scheduler(
         store.clone(),
         Some(PathBuf::from("codex-scheduler-cli")),
-        Box::new(codex_scheduler_core::os_scheduler::FallbackScheduler),
+        Box::new(ReadyMockScheduler),
     );
 
     // 過去時刻のジョブ（期限到来）
@@ -139,7 +164,7 @@ async fn test_execute_tick_shared_semantics_updates_history() {
     let service = SchedulerService::with_scheduler(
         store.clone(),
         Some(PathBuf::from("/bin/echo")),
-        Box::new(codex_scheduler_core::os_scheduler::FallbackScheduler),
+        Box::new(ReadyMockScheduler),
     );
 
     // Past due job (ready for execution)
@@ -187,23 +212,35 @@ async fn test_cli_service_guards_against_launchagent_registration() {
     use codex_scheduler_core::os_scheduler::{SchedulerBackend, SchedulerError};
     use codex_scheduler_core::models::Job;
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     struct MockScheduler {
-        installed: bool,
-        ready: bool,
+        installed: Arc<AtomicBool>,
+        ready: Arc<AtomicBool>,
+    }
+    impl MockScheduler {
+        fn new(installed: bool, ready: bool) -> Self {
+            Self {
+                installed: Arc::new(AtomicBool::new(installed)),
+                ready: Arc::new(AtomicBool::new(ready)),
+            }
+        }
     }
     impl SchedulerBackend for MockScheduler {
         fn ensure_scheduler_installed(&self, _path: &Path) -> Result<(), SchedulerError> {
+            self.installed.store(true, Ordering::SeqCst);
+            self.ready.store(true, Ordering::SeqCst);
             Ok(())
         }
         fn is_scheduler_installed(&self) -> bool {
-            self.installed
+            self.installed.load(Ordering::SeqCst)
         }
         fn is_scheduler_ready(&self) -> bool {
-            self.ready
+            self.ready.load(Ordering::SeqCst)
         }
         fn is_scheduler_path_matched(&self, _path: &Path) -> bool {
-            self.installed
+            self.installed.load(Ordering::SeqCst)
         }
         fn uninstall_scheduler(&self) -> Result<(), SchedulerError> {
             Ok(())
@@ -223,7 +260,7 @@ async fn test_cli_service_guards_against_launchagent_registration() {
     let cli_service = SchedulerService::with_scheduler(
         store.clone(),
         None,
-        Box::new(MockScheduler { installed: false, ready: false }),
+        Box::new(MockScheduler::new(false, false)),
     );
     assert!(cli_service.desktop_exe_path().is_none());
 
@@ -256,7 +293,7 @@ async fn test_cli_service_guards_against_launchagent_registration() {
         let installed_cli_service = SchedulerService::with_scheduler(
             store.clone(),
             None,
-            Box::new(MockScheduler { installed: true, ready: true }),
+            Box::new(MockScheduler::new(true, true)),
         );
         let scheduled_job = installed_cli_service
             .schedule_job(
@@ -276,8 +313,8 @@ async fn test_cli_service_guards_against_launchagent_registration() {
         std::fs::write(&dummy_cli, b"#!/bin/sh\nexit 0").unwrap();
         let auto_ensure_service = SchedulerService::with_scheduler(
             store.clone(),
-            Some(dummy_cli),
-            Box::new(MockScheduler { installed: false, ready: false }),
+            Some(dummy_cli.clone()),
+            Box::new(MockScheduler::new(false, false)),
         );
         let auto_job = auto_ensure_service
             .schedule_job(
@@ -290,6 +327,37 @@ async fn test_cli_service_guards_against_launchagent_registration() {
             )
             .expect("Should auto-ensure when CLI exe_path is present");
         assert_eq!(auto_job.session_id, "session-auto");
+
+        // Case 5: When ensure/repair fails to make scheduler ready, schedule_job fails and NO job is added to the store (atomicity)
+        struct FailingEnsureScheduler;
+        impl SchedulerBackend for FailingEnsureScheduler {
+            fn ensure_scheduler_installed(&self, _path: &Path) -> Result<(), SchedulerError> {
+                Ok(()) // returns Ok without making ready true (simulating unready state)
+            }
+            fn is_scheduler_installed(&self) -> bool { true }
+            fn is_scheduler_ready(&self) -> bool { false }
+            fn is_scheduler_path_matched(&self, _path: &Path) -> bool { true }
+            fn uninstall_scheduler(&self) -> Result<(), SchedulerError> { Ok(()) }
+            fn register_job(&self, _job: &Job, _path: &Path) -> Result<(), SchedulerError> { Ok(()) }
+            fn unregister_job(&self, _job_id: &str) -> Result<(), SchedulerError> { Ok(()) }
+        }
+        let failing_service = SchedulerService::with_scheduler(
+            store.clone(),
+            Some(dummy_cli),
+            Box::new(FailingEnsureScheduler),
+        );
+        let jobs_before = store.load_all().unwrap().len();
+        let fail_res = failing_service.schedule_job(
+            ProviderType::Codex,
+            "session-atomic-fail".to_string(),
+            temp_dir.path().to_path_buf(),
+            Some("fail prompt".to_string()),
+            Utc::now() + chrono::Duration::hours(1),
+            None,
+        );
+        assert!(fail_res.is_err(), "schedule_job must fail when scheduler is not ready after ensure");
+        let jobs_after = store.load_all().unwrap().len();
+        assert_eq!(jobs_before, jobs_after, "JobStore must not retain new job when scheduler is unready");
     }
 }
 

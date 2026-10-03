@@ -162,6 +162,14 @@ impl SchedulerService {
         }
     }
 
+    pub fn is_target_executable_exists(&self) -> bool {
+        self.scheduler.is_target_executable_exists()
+    }
+
+    pub fn is_owner_target_valid(&self) -> bool {
+        self.scheduler.is_owner_target_valid()
+    }
+
     pub fn schedule_job(
         &self,
         provider: ProviderType,
@@ -176,7 +184,7 @@ impl SchedulerService {
         // If invoked from Desktop GUI (is_desktop is true), ensure scheduler is registered with app path.
         // If invoked from CLI (is_desktop is false):
         // - on macOS: if scheduler is ready (Desktop-owned or CLI-owned), keep existing LaunchAgent.
-        //   If NOT ready (None, Legacy, stale), safely ensure using current CLI executable.
+        //   If NOT ready (None, Legacy, stale, or unloaded Desktop), safely ensure / repair using current CLI executable.
         // - on non-macOS: proceed.
         if self.is_desktop {
             if let Some(path) = &self.exe_path {
@@ -194,6 +202,18 @@ impl SchedulerService {
                         )));
                     }
                 }
+
+                // WHY: Atomic scheduling invariant (OS-SCHED-006, CLI-CMD-004).
+                //      If the persistent OS scheduler cannot be verified as ready/loaded in macOS,
+                //      we must NOT save the new job to JobStore, preventing orphan jobs that would never trigger.
+                // WHAT BREAKS: Silent insertion when scheduler is unready causes users to believe a job is scheduled,
+                //              but background tick will never execute it.
+                // EVIDENCE: docs/spec-changes/0015-macos-scheduler-health-and-cli-status.md
+                if !self.is_scheduler_ready() {
+                    return Err(CoreError::Scheduler(os_scheduler::SchedulerError::CommandFailed(
+                        "OS scheduler LaunchAgent is not ready or loaded. Job scheduling aborted.".to_string(),
+                    )));
+                }
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -203,7 +223,7 @@ impl SchedulerService {
             }
         }
 
-        // Save to store
+        // Save to store only after scheduler readiness is verified
         self.store.insert_job(job.clone())?;
         Ok(job)
     }

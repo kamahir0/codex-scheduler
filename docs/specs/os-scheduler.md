@@ -106,12 +106,20 @@ macOS環境において、単一常設 LaunchAgent（`dev.codexscheduler.schedul
    - `None`: LaunchAgent plist が存在しない状態。
    - `Legacy`: 過去バージョンの引数形式（旧 Worker 呼出等）や個別ジョブ plist が残存している状態。
    - `Invalid`: 登録ファイルが存在するが構文が不正、または登録された実行ファイルがディスク上に存在しない状態。
-3. **優先度ルール（Precedence Rules）**:
+3. **Desktop 所有スケジューラの健全性状態モデル**:
+   - `Healthy`: Desktop 所有かつ `launchctl list` に正常登録・稼働中（`is_scheduler_ready() == true`）。
+   - `Unloaded / Recoverable`: Desktop 所有かつ登録 plist および実行ファイルが実在するが、`launchctl list` に未ロード（`is_scheduler_ready() == false`）。
+   - `Malformed / Invalid`: 登録 plist の構文不正、未対応ラベル、または登録実行ファイルがディスク上に存在しない状態。
+4. **優先度および修復ルール（Precedence & Repair Rules）**:
    - **Desktop 優先（Desktop Precedence）**: 有効な `Desktop` 所有の登録が存在する場合、CLI からのスケジューラ登録（ensure）は既存の LaunchAgent を上書きしてはならない（MUST NOT overwrite）。CLI は Desktop 所有スケジューラをそのまま維持し、ジョブ登録のみを行う。
+   - **未ロード Desktop スケジューラの安全修復（Safe Reload Repair）**: `Unloaded / Recoverable` 状態の Desktop 所有スケジューラが存在する場合、CLI または Desktop からの ensure / repair 要求は、plist ファイル内容（実行ファイルパスや引数）を変更することなく、既存 plist をそのまま `launchctl load -w` で再ロード（safe repair）しなければならない（MUST）。CLI バイナリによる上書きや所有権の奪取を行ってはならない（MUST NOT overwrite with CLI binary）。
    - **CLI 所有からの安全な移行（Safe Migration）**: `Cli` 所有の状態で Desktop GUI が起動された場合、Desktop は LaunchAgent の実行主体をメインアプリ実行ファイルへ安全に更新・移行（takeover）してよい（MAY）。
    - **消失した stale 登録の修復（Stale Repair）**: 登録先バイナリが存在しない既知の stale 登録（`Invalid`）は、利用可能な frontend（Desktop または CLI）が安全に自己の実行ファイルで上書き・修復できる（MAY）。
    - **未知・破損設定の保護（Malformed Protection）**: 解析不能な未知の設定や手動破損ファイルは、デフォルトで無言上書きしてはならず（MUST NOT）、構造化されたエラーとして報告しなければならない（MUST）。
    - **アンインストール保護（Uninstall Protection）**: CLI の `uninstall-scheduler` コマンドは、現在の所有者が `Desktop` である場合はアンインストールを実行してはならず（MUST NOT）、エラーを返して Desktop スケジューラを保護しなければならない（MUST）。
+5. **スケジュールアトミック性（Schedule Atomicity Invariant）**:
+   - macOS において、常設スケジューラによる定期 tick 実行が前提となるジョブ登録処理は、スケジューラが ready であることを確認した後にのみ JobStore への書き込みを行わなければならない（MUST）。
+   - safe repair に失敗した場合や設定破損により ready にできなかった場合、新規ジョブを「成功」として JobStore に保存してはならず（MUST NOT persist due job on scheduler readiness failure）、構造化エラーを返さなければならない（MUST）。
 
 ## 検証ルール
 
@@ -120,5 +128,6 @@ macOS環境において、単一常設 LaunchAgent（`dev.codexscheduler.schedul
 - レガシーplist（`com.codexscheduler.job.*.plist`）の検出および削除処理を検証する。
 - `tick` コマンドで期限到来ジョブ（Scheduled / Retrying）が正しく実行され、期限未到来ジョブおよび終端ステータスがスキップされることを検証する。
 - 所有権判定（Desktop / Cli / None / Legacy / Invalid）が正しく機能することを検証する。
-- Desktop 所有時に CLI の `ensure` が上書きせず維持されること、および `uninstall` が保護エラーとなることを検証する。
+- Desktop 所有時に CLI の `ensure` が上書きせず維持されること、未ロード時に既存 plist を維持して再ロード修復されること、および `uninstall` が保護エラーとなることを検証する。
 - CLI 所有時に Desktop の `ensure` が安全に Desktop 所有へ移行することを検証する。
+- スケジューラ修復失敗時に新規ジョブが JobStore に残らないことを検証する。

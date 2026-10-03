@@ -131,6 +131,8 @@ struct SchedulerStatusOutput {
     owner: SchedulerOwner,
     executable: Option<String>,
     path_matched: bool,
+    target_exists: bool,
+    owner_target_valid: bool,
 }
 
 fn print_error_and_exit(code: &str, msg: &str, json: bool) -> ! {
@@ -347,6 +349,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     owner: service.get_scheduler_owner(),
                     executable: service.get_scheduler_executable_path().map(|p| p.display().to_string()),
                     path_matched: service.is_scheduler_path_matched(),
+                    target_exists: service.is_target_executable_exists(),
+                    owner_target_valid: service.is_owner_target_valid(),
                 },
                 platform: std::env::consts::OS.to_string(),
             };
@@ -355,16 +359,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("Codex Scheduler v{}", output.version);
-                println!("Platform:        {}", output.platform);
-                println!("Store Path:      {}", output.store_path);
+                println!("Platform:            {}", output.platform);
+                println!("Store Path:          {}", output.store_path);
                 println!("Scheduler:");
-                println!("  Installed:     {}", output.scheduler.installed);
-                println!("  Ready:         {}", output.scheduler.ready);
-                println!("  Owner:         {}", output.scheduler.owner);
+                println!("  Installed:         {}", output.scheduler.installed);
+                println!("  Ready:             {}", output.scheduler.ready);
+                println!("  Owner:             {}", output.scheduler.owner);
                 if let Some(ref exe) = output.scheduler.executable {
-                    println!("  Executable:    {}", exe);
+                    println!("  Executable:        {}", exe);
                 }
-                println!("  Path Matched:  {}", output.scheduler.path_matched);
+                println!("  Path Matched:      {}", output.scheduler.path_matched);
+                println!("  Target Exists:     {}", output.scheduler.target_exists);
+                println!("  Owner Target Valid:{}", output.scheduler.owner_target_valid);
             }
         }
         Commands::Tick { json } => {
@@ -378,14 +384,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::InstallScheduler { json } => {
             let owner = service.get_scheduler_owner();
             if owner == SchedulerOwner::Desktop {
-                if json {
-                    println!("{}", serde_json::json!({
-                        "status": "retained",
-                        "owner": "desktop",
-                        "message": "Desktop-owned scheduler is already active. Retaining Desktop ownership."
-                    }));
+                if service.is_scheduler_ready() {
+                    if json {
+                        println!("{}", serde_json::json!({
+                            "status": "retained",
+                            "owner": "desktop",
+                            "message": "Desktop-owned scheduler is already active. Retaining Desktop ownership."
+                        }));
+                    } else {
+                        println!("Notice: Desktop-owned scheduler is already active. Retaining Desktop ownership.");
+                    }
                 } else {
-                    println!("Notice: Desktop-owned scheduler is already active. Retaining Desktop ownership.");
+                    // State B: Desktop-owned LaunchAgent exists but is not ready. Attempt safe repair.
+                    match service.ensure_scheduler() {
+                        Ok(()) if service.is_scheduler_ready() => {
+                            if json {
+                                println!("{}", serde_json::json!({
+                                    "status": "repaired",
+                                    "owner": "desktop",
+                                    "message": "Desktop-owned scheduler was not loaded, but has been safely repaired and is now active."
+                                }));
+                            } else {
+                                println!("Notice: Desktop-owned scheduler was not loaded, but has been safely repaired and is now active.");
+                            }
+                        }
+                        Ok(()) => {
+                            print_error_and_exit(
+                                "repair_scheduler_failed",
+                                "Desktop-owned scheduler was reloaded, but launchctl still reports not ready.",
+                                json,
+                            );
+                        }
+                        Err(e) => {
+                            print_error_and_exit("repair_scheduler_failed", &e.to_string(), json);
+                        }
+                    }
                 }
             } else {
                 match service.ensure_scheduler() {
@@ -551,6 +584,8 @@ mod tests {
                 owner: SchedulerOwner::Desktop,
                 executable: Some("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui".to_string()),
                 path_matched: true,
+                target_exists: true,
+                owner_target_valid: true,
             },
             platform: "macos".to_string(),
         };
@@ -559,6 +594,8 @@ mod tests {
         assert_eq!(value["scheduler"]["owner"], "desktop");
         assert_eq!(value["scheduler"]["installed"], true);
         assert_eq!(value["scheduler"]["ready"], true);
+        assert_eq!(value["scheduler"]["target_exists"], true);
+        assert_eq!(value["scheduler"]["owner_target_valid"], true);
         assert_eq!(value["version"], "0.3.0");
         assert_eq!(value["platform"], "macos");
     }

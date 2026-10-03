@@ -41,6 +41,9 @@ fn test_cli_status_json() {
     assert!(val["scheduler"].get("owner").is_some());
     assert!(val["scheduler"].get("installed").is_some());
     assert!(val["scheduler"].get("ready").is_some());
+    assert!(val["scheduler"].get("path_matched").is_some());
+    assert!(val["scheduler"].get("target_exists").is_some());
+    assert!(val["scheduler"].get("owner_target_valid").is_some());
 }
 
 #[test]

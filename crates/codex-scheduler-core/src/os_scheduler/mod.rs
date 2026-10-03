@@ -71,6 +71,48 @@ pub trait SchedulerBackend: Send + Sync {
         None
     }
 
+    /// 登録されているスケジューラ実行ファイルがディスク上に実在するか確認する
+    fn is_target_executable_exists(&self) -> bool {
+        self.get_scheduler_executable_path()
+            .map(|p| p.is_absolute() && p.exists())
+            .unwrap_or(false)
+    }
+
+    /// 登録されているスケジューラ実行ファイルが検出された所有者種別（Desktop または CLI）の正当なバイナリであるか確認する
+    fn is_owner_target_valid(&self) -> bool {
+        let owner = self.get_scheduler_owner();
+        if let Some(path) = self.get_scheduler_executable_path() {
+            if !path.is_absolute() || !path.exists() {
+                return false;
+            }
+            match owner {
+                SchedulerOwner::Desktop => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        macos::MacOsLaunchdScheduler::is_desktop_executable(&path)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        true
+                    }
+                }
+                SchedulerOwner::Cli => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        macos::MacOsLaunchdScheduler::is_cli_executable(&path)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        true
+                    }
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+
     /// 常設スケジューラサービスを登録解除・アンインストールする
     fn uninstall_scheduler(&self) -> Result<(), SchedulerError>;
 
@@ -160,6 +202,8 @@ mod tests {
         assert!(!scheduler.is_scheduler_installed());
         assert!(!scheduler.is_scheduler_ready());
         assert!(!scheduler.is_scheduler_path_matched(dummy_path));
+        assert!(!scheduler.is_target_executable_exists());
+        assert!(!scheduler.is_owner_target_valid());
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::None);
         assert_eq!(scheduler.get_scheduler_executable_path(), None);
 

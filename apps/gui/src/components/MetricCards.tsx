@@ -45,7 +45,7 @@ export const MetricCards: React.FC<MetricCardsProps> = ({ jobs }) => {
           <Statistic
             title={
               <span style={{ display: "flex", alignItems: "center", gap: 6, cursor: "default" }}>
-                <Calendar size={16} color="#fa8c16" /> 待機・実行中ジョブ
+                <Calendar size={16} /> 待機・実行中ジョブ
               </span>
             }
             value={activeJobs.length + runningJobs.length}
@@ -54,7 +54,7 @@ export const MetricCards: React.FC<MetricCardsProps> = ({ jobs }) => {
                 ? `(実行中: ${runningJobs.length})`
                 : "件"
             }
-            valueStyle={{ color: activeJobs.length > 0 ? "#fa8c16" : undefined, fontWeight: 600, cursor: "default" }}
+            valueStyle={{ fontWeight: 600, cursor: "default" }}
           />
         </Card>
       </Col>

@@ -12,7 +12,7 @@ async fn test_full_scheduler_workflow() {
 
     let service = SchedulerService::with_scheduler(
         store.clone(),
-        PathBuf::from("codex-scheduler-cli"),
+        Some(PathBuf::from("codex-scheduler-cli")),
         Box::new(codex_scheduler_core::os_scheduler::FallbackScheduler),
     );
 
@@ -80,7 +80,7 @@ async fn test_tick_due_and_future_jobs_filter() {
     let store = JobStore::new_with_path(store_path);
     let service = SchedulerService::with_scheduler(
         store.clone(),
-        PathBuf::from("codex-scheduler-cli"),
+        Some(PathBuf::from("codex-scheduler-cli")),
         Box::new(codex_scheduler_core::os_scheduler::FallbackScheduler),
     );
 
@@ -138,7 +138,7 @@ async fn test_execute_tick_shared_semantics_updates_history() {
     let store = JobStore::new_with_path(store_path);
     let service = SchedulerService::with_scheduler(
         store.clone(),
-        PathBuf::from("/bin/echo"),
+        Some(PathBuf::from("/bin/echo")),
         Box::new(codex_scheduler_core::os_scheduler::FallbackScheduler),
     );
 
@@ -180,6 +180,93 @@ async fn test_execute_tick_shared_semantics_updates_history() {
     // Next tick execution should find 0 due jobs
     let second_tick = service.execute_tick().await.unwrap();
     assert_eq!(second_tick.len(), 0);
+}
+
+#[tokio::test]
+async fn test_cli_service_guards_against_launchagent_registration() {
+    use codex_scheduler_core::os_scheduler::{SchedulerBackend, SchedulerError};
+    use codex_scheduler_core::models::Job;
+    use std::path::Path;
+
+    struct MockScheduler {
+        installed: bool,
+    }
+    impl SchedulerBackend for MockScheduler {
+        fn ensure_scheduler_installed(&self, _path: &Path) -> Result<(), SchedulerError> {
+            Ok(())
+        }
+        fn is_scheduler_installed(&self) -> bool {
+            self.installed
+        }
+        fn is_scheduler_path_matched(&self, _path: &Path) -> bool {
+            self.installed
+        }
+        fn uninstall_scheduler(&self) -> Result<(), SchedulerError> {
+            Ok(())
+        }
+        fn register_job(&self, _job: &Job, _path: &Path) -> Result<(), SchedulerError> {
+            Ok(())
+        }
+        fn unregister_job(&self, _job_id: &str) -> Result<(), SchedulerError> {
+            Ok(())
+        }
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let store = JobStore::new_with_path(temp_dir.path().join("cli_guard_jobs.json"));
+
+    // Case 1: CLI service cannot call ensure_scheduler on macOS
+    let cli_service = SchedulerService::with_scheduler(
+        store.clone(),
+        None,
+        Box::new(MockScheduler { installed: false }),
+    );
+    assert!(cli_service.desktop_exe_path().is_none());
+
+    #[cfg(target_os = "macos")]
+    {
+        let ensure_err = cli_service.ensure_scheduler().unwrap_err();
+        match ensure_err {
+            codex_scheduler_core::CoreError::Scheduler(SchedulerError::DesktopAppRequired) => {}
+            _ => panic!("Expected DesktopAppRequired, got {:?}", ensure_err),
+        }
+
+        // Case 2: If scheduler is not installed, scheduling from CLI fails with DesktopAppRequired
+        let schedule_err = cli_service
+            .schedule_job(
+                ProviderType::Codex,
+                "session-cli".to_string(),
+                temp_dir.path().to_path_buf(),
+                Some("cli prompt".to_string()),
+                Utc::now() + chrono::Duration::hours(1),
+                None,
+            )
+            .unwrap_err();
+
+        match schedule_err {
+            codex_scheduler_core::CoreError::Scheduler(SchedulerError::DesktopAppRequired) => {}
+            _ => panic!("Expected DesktopAppRequired, got {:?}", schedule_err),
+        }
+
+        // Case 3: If scheduler IS installed (e.g. by Desktop app), scheduling from CLI succeeds without overwriting scheduler
+        let installed_cli_service = SchedulerService::with_scheduler(
+            store.clone(),
+            None,
+            Box::new(MockScheduler { installed: true }),
+        );
+        let scheduled_job = installed_cli_service
+            .schedule_job(
+                ProviderType::Codex,
+                "session-cli-ok".to_string(),
+                temp_dir.path().to_path_buf(),
+                Some("cli prompt ok".to_string()),
+                Utc::now() + chrono::Duration::hours(1),
+                None,
+            )
+            .expect("Should schedule when already installed");
+
+        assert_eq!(scheduled_job.session_id, "session-cli-ok");
+    }
 }
 
 

@@ -78,9 +78,8 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-scheduler-cli"));
     let store = JobStore::default_store()?;
-    let service = SchedulerService::new(store, current_exe);
+    let service = SchedulerService::new_for_cli(store);
 
     match cli.command {
         Commands::RunJob { job_id } => {
@@ -208,8 +207,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::InstallScheduler => {
-            service.ensure_scheduler()?;
-            println!("Persistent OS scheduler service installed and active.");
+            #[cfg(target_os = "macos")]
+            {
+                println!("Notice: macOS環境でのLaunchAgent登録はCodex Scheduler.app本体の初回起動時に安全に行われます。CLI自身をLaunchAgentに登録することはできません。Codex Scheduler.appを起動してください。");
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                service.ensure_scheduler()?;
+                println!("Persistent OS scheduler service installed and active.");
+            }
         }
         Commands::UninstallScheduler => {
             let os_sched = codex_scheduler_core::os_scheduler::get_platform_scheduler();

@@ -31,54 +31,81 @@ pub enum CoreError {
 
 pub struct SchedulerService {
     store: JobStore,
-    exe_path: PathBuf,
+    desktop_exe_path: Option<PathBuf>,
     scheduler: std::sync::Arc<dyn os_scheduler::SchedulerBackend>,
 }
 
 impl SchedulerService {
-    pub fn new(store: JobStore, exe_path: PathBuf) -> Self {
+    /// Creates a scheduler service for the Desktop GUI application with its executable path.
+    pub fn new(store: JobStore, desktop_exe_path: PathBuf) -> Self {
         Self {
             store,
-            exe_path,
+            desktop_exe_path: Some(desktop_exe_path),
+            scheduler: std::sync::Arc::from(get_platform_scheduler()),
+        }
+    }
+
+    /// Creates a scheduler service for CLI tools where the running CLI binary must NOT be registered as the LaunchAgent.
+    pub fn new_for_cli(store: JobStore) -> Self {
+        Self {
+            store,
+            desktop_exe_path: None,
             scheduler: std::sync::Arc::from(get_platform_scheduler()),
         }
     }
 
     pub fn with_scheduler(
         store: JobStore,
-        exe_path: PathBuf,
+        desktop_exe_path: Option<PathBuf>,
         scheduler: Box<dyn os_scheduler::SchedulerBackend>,
     ) -> Self {
         Self {
             store,
-            exe_path,
+            desktop_exe_path,
             scheduler: std::sync::Arc::from(scheduler),
         }
     }
 
     pub fn default_service() -> Result<Self, CoreError> {
         let store = JobStore::default_store()?;
-        let exe_path = std::env::current_exe().unwrap_or_else(|_| {
-            worker::ensure_worker_installed().unwrap_or_else(|_| worker::canonical_worker_path())
-        });
-        Ok(Self::new(store, exe_path))
+        Ok(Self::new_for_cli(store))
     }
 
     pub fn store(&self) -> &JobStore {
         &self.store
     }
 
+    pub fn desktop_exe_path(&self) -> Option<&Path> {
+        self.desktop_exe_path.as_deref()
+    }
+
     pub fn exe_path(&self) -> &Path {
-        &self.exe_path
+        self.desktop_exe_path
+            .as_deref()
+            .unwrap_or_else(|| Path::new(""))
     }
 
     pub fn cli_path(&self) -> &Path {
-        &self.exe_path
+        self.exe_path()
     }
 
     pub fn ensure_scheduler(&self) -> Result<(), CoreError> {
-        self.scheduler.ensure_scheduler_installed(&self.exe_path)?;
-        Ok(())
+        match &self.desktop_exe_path {
+            Some(path) => {
+                self.scheduler.ensure_scheduler_installed(path)?;
+                Ok(())
+            }
+            None => {
+                #[cfg(target_os = "macos")]
+                {
+                    Err(CoreError::Scheduler(os_scheduler::SchedulerError::DesktopAppRequired))
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Ok(())
+                }
+            }
+        }
     }
 
     pub fn is_scheduler_installed(&self) -> bool {
@@ -86,7 +113,10 @@ impl SchedulerService {
     }
 
     pub fn is_scheduler_path_matched(&self) -> bool {
-        self.scheduler.is_scheduler_path_matched(&self.exe_path)
+        match &self.desktop_exe_path {
+            Some(path) => self.scheduler.is_scheduler_path_matched(path),
+            None => false,
+        }
     }
 
     pub fn schedule_job(
@@ -100,8 +130,20 @@ impl SchedulerService {
     ) -> Result<Job, CoreError> {
         let job = Job::new(provider, session_id, cwd, prompt, scheduled_at, retry_policy)?;
 
-        // Ensure persistent OS scheduler service is installed and error is strictly propagated
-        self.ensure_scheduler()?;
+        // If invoked from Desktop GUI (desktop_exe_path is Some), ensure scheduler is registered with app path.
+        // If invoked from CLI (desktop_exe_path is None):
+        // - on macOS: verify scheduler is already installed by the Desktop App; do NOT overwrite LaunchAgent with CLI binary!
+        // - on non-macOS: proceed.
+        if let Some(path) = &self.desktop_exe_path {
+            self.scheduler.ensure_scheduler_installed(path)?;
+        } else {
+            #[cfg(target_os = "macos")]
+            {
+                if !self.is_scheduler_installed() {
+                    return Err(CoreError::Scheduler(os_scheduler::SchedulerError::DesktopAppRequired));
+                }
+            }
+        }
 
         // Save to store
         self.store.insert_job(job.clone())?;

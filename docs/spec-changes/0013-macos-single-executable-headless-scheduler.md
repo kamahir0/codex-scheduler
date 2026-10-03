@@ -50,12 +50,19 @@ Status: Approved
 - `crates/codex-scheduler-core`:
   - `os_scheduler/macos.rs`:
     - `generate_scheduler_plist_content(app_executable_path: &Path)`: 引数を `app_executable_path` と `--scheduler-tick` に更新。
-    - `ensure_scheduler_installed`: `launchctl` の失敗時に `SchedulerError::CommandFailed` を返しエラーを握りつぶさない。既存 plist が新 executable パスと不一致の場合は再登録。
+    - `ensure_scheduler_installed`: `codex-scheduler-cli` が渡された場合は `SchedulerError::DesktopAppRequired` で明示拒絶。既存 plist が新 executable パスと不一致の場合は再登録。
+    - `safe_launchctl_unload`: 未ロード時（"Could not find specified service", "Not loaded" 等）以外のエラーを `SchedulerError::CommandFailed` として厳格伝播。
+  - `os_scheduler/mod.rs`:
+    - `SchedulerError::DesktopAppRequired` を追加。
   - `store.rs`:
     - `claim_due_jobs(now: DateTime<Utc>) -> Result<Vec<Job>, StoreError>`: 排他的に due job を取得し `Running` に更新して永続化。
   - `lib.rs`:
     - `execute_tick() -> Result<Vec<Job>, CoreError>`: core shared logic として tick 処理を提供。
-    - `schedule_job()` で `ensure_scheduler()` のエラーを `?` で伝播。
+    - `SchedulerService::new_for_cli`: CLIツール向けコンストラクタを提供し、CLI自身をLaunchAgentへ登録できないよう責務を分離。macOSでCLIからジョブ登録時、未インストールであれば `DesktopAppRequired` を返却。
+- `crates/codex-scheduler-cli`:
+  - `main.rs`: `SchedulerService::new_for_cli` を使用し、macOSでの `install-scheduler` ではCLI自身を登録させずDesktop Appの起動を案内。
+- `.github/workflows/release.yml`:
+  - macOS向けビルドでは不要となった `codex-scheduler-cli` のビルドおよび .app bundle Resourcesへの同梱を除外（Windowsのみに限定）。
 - `apps/gui/src-tauri`:
   - `main.rs`: 引数に `--scheduler-tick` が含まれる場合は `codex_scheduler_gui_lib::run_headless_tick()` を呼び出して即終了。含まれない場合は通常の `codex_scheduler_gui_lib::run()`。
   - `lib.rs`: `run_headless_tick()` の提供、`create_job` でのスケジューラ登録エラー伝播。

@@ -93,6 +93,32 @@ impl MacOsLaunchdScheduler {
         )
     }
 
+    /// Safely executes `launchctl unload <plist>` and ensures errors other than "not loaded" are strictly propagated.
+    pub fn safe_launchctl_unload(plist_path: &Path) -> Result<(), SchedulerError> {
+        let output = Command::new("launchctl")
+            .arg("unload")
+            .arg(plist_path)
+            .output()?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            let err_trimmed = err.trim();
+            // In macOS launchctl, unloading a service that is not currently registered/loaded
+            // outputs messages like "Could not find specified service", "Not loaded", or similar.
+            let is_not_loaded = err_trimmed.contains("Could not find specified service")
+                || err_trimmed.contains("Not loaded")
+                || err_trimmed.contains("No such process");
+            if !is_not_loaded && !err_trimmed.is_empty() {
+                return Err(SchedulerError::CommandFailed(format!(
+                    "launchctl unload failed for {}: {}",
+                    plist_path.display(),
+                    err_trimmed
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// 過去バージョンで作成されたジョブ個別plist（com.codexscheduler.job.*.plist）を検出してアンロード・削除
     pub fn cleanup_legacy_job_plists(&self) -> Result<(), SchedulerError> {
         if !self.launch_agents_dir.exists() {
@@ -108,11 +134,8 @@ impl MacOsLaunchdScheduler {
             let path = entry.path();
             if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                 if file_name.starts_with(LEGACY_PLIST_PREFIX) && file_name.ends_with(".plist") {
-                    let _ = Command::new("launchctl")
-                        .arg("unload")
-                        .arg(&path)
-                        .output();
-                    let _ = fs::remove_file(&path);
+                    Self::safe_launchctl_unload(&path)?;
+                    fs::remove_file(&path)?;
                 }
             }
         }
@@ -129,6 +152,13 @@ impl Default for MacOsLaunchdScheduler {
 
 impl SchedulerBackend for MacOsLaunchdScheduler {
     fn ensure_scheduler_installed(&self, app_executable_path: &Path) -> Result<(), SchedulerError> {
+        // Guard against registering CLI binary as LaunchAgent target (which causes Gatekeeper rejections)
+        if let Some(name) = app_executable_path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with("codex-scheduler-cli") {
+                return Err(SchedulerError::DesktopAppRequired);
+            }
+        }
+
         if !app_executable_path.is_absolute() {
             return Err(SchedulerError::InvalidExecutable(
                 app_executable_path.display().to_string(),
@@ -146,7 +176,7 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
         }
 
         // レガシーな個別ジョブplistがあれば一括クリーンアップ
-        let _ = self.cleanup_legacy_job_plists();
+        self.cleanup_legacy_job_plists()?;
 
         let plist_path = self.scheduler_plist_path();
         let expected_content = Self::generate_scheduler_plist_content(app_executable_path);
@@ -168,12 +198,9 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
             }
         }
 
-        // 既存の登録があれば一旦アンロード（古いWorkerパスからの移行や移動時）
+        // 既存の登録があれば確実にアンロード（古いWorkerパスからの移行や移動時）
         if plist_path.exists() {
-            let _ = Command::new("launchctl")
-                .arg("unload")
-                .arg(&plist_path)
-                .output();
+            Self::safe_launchctl_unload(&plist_path)?;
         }
 
         // 新規作成または内容更新時のみ書き込み＆ロード
@@ -217,11 +244,8 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
     fn uninstall_scheduler(&self) -> Result<(), SchedulerError> {
         let plist_path = self.scheduler_plist_path();
         if plist_path.exists() {
-            let _ = Command::new("launchctl")
-                .arg("unload")
-                .arg(&plist_path)
-                .output();
-            let _ = fs::remove_file(&plist_path);
+            Self::safe_launchctl_unload(&plist_path)?;
+            fs::remove_file(&plist_path)?;
         }
         Ok(())
     }
@@ -233,11 +257,8 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
     fn unregister_job(&self, job_id: &str) -> Result<(), SchedulerError> {
         let legacy_path = self.legacy_job_plist_path(job_id);
         if legacy_path.exists() {
-            let _ = Command::new("launchctl")
-                .arg("unload")
-                .arg(&legacy_path)
-                .output();
-            let _ = fs::remove_file(&legacy_path);
+            Self::safe_launchctl_unload(&legacy_path)?;
+            fs::remove_file(&legacy_path)?;
         }
         Ok(())
     }
@@ -363,6 +384,21 @@ mod tests {
 
         scheduler.cleanup_legacy_job_plists().unwrap();
         assert!(!legacy_file.exists());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_rejects_cli_binary_registration() {
+        let temp_dir = std::env::temp_dir().join(format!("test-cli-reject-{}", uuid::Uuid::new_v4()));
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+        let cli_path = Path::new("/usr/local/bin/codex-scheduler-cli");
+
+        let err = scheduler.ensure_scheduler_installed(cli_path).unwrap_err();
+        match err {
+            SchedulerError::DesktopAppRequired => {}
+            _ => panic!("Expected DesktopAppRequired error, got: {:?}", err),
+        }
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

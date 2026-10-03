@@ -16,6 +16,8 @@ pub enum SchedulerError {
     InvalidExecutable(String),
     #[error("Expected executable does not exist: {0}")]
     ExecutableNotFound(String),
+    #[error("On macOS, scheduler registration must be performed via Codex Scheduler.app, not from CLI")]
+    DesktopAppRequired,
 }
 
 pub trait SchedulerBackend: Send + Sync {

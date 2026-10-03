@@ -62,10 +62,11 @@ Windows環境において、バックグラウンド定期実行を担保する�
      - `RunOnlyIfNetworkAvailable: false`
      - `StartWhenAvailable: true`（予定時刻経過後の再開時即時実行）
      - `WakeToRun: false`（スリープ解除は強制せず、復帰後次tickで処理）
-3. **OS境界と schtasks.exe コマンド実行契約**:
-   - Windows標準の `schtasks.exe` を使用し、`std::process::Command` の引数ベクタ形式で安全に呼び出す（シェル文字列連結によるコマンドインジェクションを禁止）。
-   - タスクの存在確認および構成照会は `schtasks /Query /TN CodexScheduler_Service /XML` を用いてXMLを構造的に解析する。
-   - テスト容易性のための抽象化境界（`TaskSchedulerRunner` トレイト）を介して実行し、ユニットテストで実機のScheduled Taskを汚染・破壊しない。
+3. **OS境界と Task Scheduler 2.0 COM API 実行契約**:
+   - Windows Task Scheduler 2.0 COM API（`ITaskService`, `ITaskFolder`, `IRegisteredTask`）を使用し、カレントユーザーのインタラクティブトークン（`TASK_LOGON_INTERACTIVE_TOKEN`）および最低特権（`TASK_RUNLEVEL_LUA` / `LeastPrivilege`）で操作する。
+   - 一般ユーザー（非管理者 / Standard User）環境で管理者昇格（UAC elevation）を一切要求せず、タスクの登録・更新・照会・削除を完結させる（`schtasks.exe` コマンドラインツールはローカルタスク作成・更新時に管理者特権を要求するため使用しない）。
+   - タスクの存在確認および構成照会は COM API のプロパティおよび定義 XML を構造的に解析する。
+   - テスト容易性のための抽象化境界（`TaskSchedulerRunner` トレイト）を介して実行し、ユニットテストで実機の Scheduled Task を汚染・破壊しない。
 4. **所有権モデルと優先度ルール**:
    - `Desktop`: アクション実行ファイル名が `codex-scheduler-gui.exe` であり実在する。
    - `Cli`: アクション実行ファイル名が `codex-scheduler.exe`（またはlegacy互換名 `codex-scheduler-cli.exe`）であり実在する。

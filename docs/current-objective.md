@@ -9,7 +9,7 @@ Windows Task Scheduler production backendを実装し、Windows Desktop / standa
 ## Completion slices
 
 - **Slice 1: State Matrix 確定 & 仕様策定・自律承認**:
-  - `docs/spec-changes/0016-windows-task-scheduler-and-cli-distribution.md`: 全状態（13行+α）の State Matrix、タスク定義（`CodexScheduler_Service`, canonical recurrence/XML/action/security/settings）、境界契約（`schtasks.exe` vector invocation, `TaskSchedulerRunner` seam）、Desktop precedence / safe migration、CLI behavior、配布形式（4正式アセット）の策定と自律承認。
+  - `docs/spec-changes/0016-windows-task-scheduler-and-cli-distribution.md`: 全状態（13行+α）の State Matrix、タスク定義（`CodexScheduler_Service`, canonical recurrence/XML/action/security/settings）、境界契約（Task Scheduler 2.0 COM API, `TaskSchedulerRunner` seam）、Desktop precedence / safe migration、CLI behavior、配布形式（4正式アセット）の策定と自律承認。
   - 関連仕様改定: `docs/specs/os-scheduler.md`, `docs/specs/cli.md`, `docs/specs/desktop-delivery.md`, `docs/gui/setup-and-diagnostics.md`, `docs/adr/0004-independent-desktop-cli-single-scheduler-owner.md`。
 - **Slice 2: コアスケジューラ Windows バックエンド実装**:
   - `crates/codex-scheduler-core/src/os_scheduler/windows.rs`:

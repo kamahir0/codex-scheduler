@@ -69,9 +69,10 @@ Windows 環境において、タスクスケジューラ登録（`ensure_schedul
   - `StartWhenAvailable`: `true`
   - `WakeToRun`: `false`（macOS 同様、PC sleep 中の exact execution は保証せず、復帰後次 tick で処理）
 
-### 3.3. OS 境界とコマンド実行契約
-- Windows 標準 `schtasks.exe` を使用し、`std::process::Command` の引数ベクタ形式で呼び出す（shell 文字列結合によるコマンドインジェクションを根本排除）。
-- タスク照会は `schtasks /Query /TN CodexScheduler_Service /XML` を使用し、XML を構造的に解析する。
+### 3.3. OS 境界と COM API 実行契約
+- Windows Task Scheduler 2.0 COM API（`ITaskService`, `ITaskFolder`, `IRegisteredTask`）を使用し、カレントユーザーのインタラクティブトークン（`TASK_LOGON_INTERACTIVE_TOKEN`）および最低特権（`LeastPrivilege`）で操作する。
+- 一般ユーザー（非管理者 / Standard User）環境で UAC 管理者昇格なしにタスクの作成・更新・照会・削除を完結させる（`schtasks.exe` はローカルタスク作成・更新時に管理者特権を要求するため使用しない）。
+- タスク照会は COM API のプロパティおよび定義 XML を構造的に解析する。
 - 抽象化レイヤ `TaskSchedulerRunner` トレイトを導入し、テスト時は `MockTaskSchedulerRunner` により実機 Scheduled Task を汚染せず決定論的に検証可能とする。
 
 ---

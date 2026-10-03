@@ -295,5 +295,81 @@ async fn test_cli_service_guards_against_launchagent_registration() {
     }
 }
 
+#[tokio::test]
+async fn test_retry_quota_backoff_and_subsequent_due_claim_lifecycle() {
+    use codex_scheduler_core::adapter::ExecutionResult;
+    use codex_scheduler_core::models::Job;
+    use codex_scheduler_core::retry::{NextAction, RetryEngine};
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let store_path = temp_dir.path().join("test_retry_claim.json");
+    let store = JobStore::new_with_path(store_path);
+
+    let now = Utc::now();
+    let job = Job::new(
+        ProviderType::Codex,
+        "session-retry-flow".to_string(),
+        temp_dir.path().to_path_buf(),
+        Some("resume prompt".to_string()),
+        now - chrono::Duration::minutes(1),
+        Some(RetryPolicy {
+            enabled: true,
+            interval_seconds: 60,
+            max_attempts: 3,
+            retry_on_quota_only: true,
+        }),
+    )
+    .unwrap();
+
+    // 1. Initial claim -> becomes Running
+    store.insert_job(job.clone()).unwrap();
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].status, JobStatus::Running);
+
+    // 2. Execution encounters quota error
+    let quota_err = ExecutionResult {
+        exit_code: Some(1),
+        stdout: String::new(),
+        stderr: "Rate limit reached / quota exceeded".to_string(),
+        is_quota_error: true,
+        success: false,
+        error_message: Some("HTTP 429 Quota error".to_string()),
+    };
+
+    let mut running_job = store.get_job(&job.id).unwrap().unwrap();
+    let action = RetryEngine::apply_evaluation(&mut running_job, &quota_err);
+
+    let next_retry_at = match action {
+        NextAction::RetryAfter(dt) => {
+            running_job.scheduled_at = dt;
+            dt
+        }
+        _ => panic!("Expected RetryAfter action, got: {:?}", action),
+    };
+
+    assert_eq!(running_job.status, JobStatus::Retrying);
+    store.update_job(&running_job).unwrap();
+
+    // 3. Before due time: tick should NOT claim the Retrying job
+    let before_due = next_retry_at - chrono::Duration::seconds(10);
+    let early_claims = store.claim_due_jobs(before_due).unwrap();
+    assert_eq!(early_claims.len(), 0, "Future retrying job must not be claimed prematurely");
+
+    // 4. At / after due time: next tick MUST claim the Retrying job and transition to Running
+    let after_due = next_retry_at + chrono::Duration::seconds(5);
+    let due_claims = store.claim_due_jobs(after_due).unwrap();
+    assert_eq!(due_claims.len(), 1, "Due retrying job must be claimed for re-execution");
+    assert_eq!(due_claims[0].id, job.id);
+    assert_eq!(due_claims[0].status, JobStatus::Running);
+
+    let in_store = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(in_store.status, JobStatus::Running);
+
+    // 5. Subsequent immediate tick: must return 0 jobs (preventing duplicate execution)
+    let duplicate_claims = store.claim_due_jobs(after_due).unwrap();
+    assert_eq!(duplicate_claims.len(), 0, "Claimed running job must not be claimed again");
+}
+
 
 

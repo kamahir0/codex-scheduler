@@ -80,6 +80,13 @@ pub fn parse_rationale_blocks(content: &str, file_name: &str) -> Vec<RationaleBl
     for (idx, line) in content.lines().enumerate() {
         let line_num = idx + 1;
         let trimmed = line.trim();
+        if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+            if let Some(b) = current_block.take() {
+                blocks.push(b);
+            }
+            current_field = None;
+            continue;
+        }
 
         if let Some(comment_body) = trimmed.strip_prefix("//") {
             let body = comment_body.trim();
@@ -602,5 +609,20 @@ mod tests {
         assert!(is_target_source_file(Path::new("crates/codex-scheduler-core/src/lib.rs")));
         assert!(is_target_source_file(Path::new("apps/gui/src/main.tsx")));
         assert!(is_target_source_file(Path::new("apps/gui/src-tauri/src/main.rs")));
+    }
+
+    #[test]
+    fn test_doc_comments_do_not_continue_rationale_block() {
+        let content = concat!(
+            "/", "/ WHY: Needed for safety\n",
+            "/", "/ WHAT BREAKS: Invariant violation\n",
+            "/", "/ EVIDENCE: KNOWN-REQ-001\n",
+            "/", "/", "/ This is a doc comment that should not be swallowed into EVIDENCE.\n",
+            "pub fn safe_fn() {}\n"
+        );
+        let blocks = parse_rationale_blocks(content, "test.rs");
+        assert_eq!(blocks.len(), 1);
+        let b = &blocks[0];
+        assert_eq!(b.evidence.as_deref(), Some("KNOWN-REQ-001"));
     }
 }

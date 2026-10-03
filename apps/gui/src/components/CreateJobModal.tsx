@@ -125,7 +125,7 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
     >
       <Alert
         message="セッションの自動再開スケジュール"
-        description="Codexデスクトップアプリで停止したセッションのIDと作業ディレクトリを入力してください。指定時刻にOSバックグラウンドで自動的に 'continue' を送信し、同一セッションの続きから作業を再開できます。"
+        description="Codexデスクトップアプリで停止したセッションのIDと作業ディレクトリを入力してください。指定時刻以降、次回の定期チェック時（通常1分以内）にOSバックグラウンドで自動的に 'continue' を送信し、同一セッションの続きから作業を再開できます。"
         type="info"
         showIcon
         style={{ marginBottom: 20 }}
@@ -186,9 +186,10 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
         </Form.Item>
 
         <Form.Item
-          label="実行予定日時"
+          label="実行予定日時（最早開始日時）"
           name="scheduled_at"
           rules={[{ required: true, message: "実行日時を選択してください" }]}
+          extra="指定時刻を過ぎた後、次回のスケジューラ確認時（通常1分以内）に実行が開始されます。"
         >
           <DatePicker
             showTime={{ format: "HH:mm" }}

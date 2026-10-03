@@ -154,7 +154,11 @@ impl JobStore {
         Ok(jobs.into_iter().filter(|j| j.status.is_active()).collect())
     }
 
-    /// Atomically finds and claims jobs that are Scheduled and due (scheduled_at <= now),
+    // WHY: Both Scheduled and Retrying jobs must be claimed when their scheduled_at has arrived,
+    //      enabling automatic quota reset retries without requiring external re-scheduling.
+    // WHAT BREAKS: Omitting Retrying status causes jobs in retry backoff to stall indefinitely.
+    // EVIDENCE: docs/specs/os-scheduler.md, OS-SCHED-005, RETRY-POLICY-001
+    /// Atomically finds and claims jobs that are Scheduled or Retrying and due (scheduled_at <= now),
     /// changing their status to Running and persisting them under an exclusive file lock.
     /// Returns the claimed jobs. This prevents multiple tick processes or race conditions from executing the same job.
     pub fn claim_due_jobs(&self, now: DateTime<Utc>) -> Result<Vec<Job>, StoreError> {
@@ -163,7 +167,11 @@ impl JobStore {
             let mut claimed = Vec::new();
 
             for job in jobs.iter_mut() {
-                if job.status == crate::models::JobStatus::Scheduled && job.scheduled_at <= now {
+                let is_due_status = matches!(
+                    job.status,
+                    crate::models::JobStatus::Scheduled | crate::models::JobStatus::Retrying
+                );
+                if is_due_status && job.scheduled_at <= now {
                     job.set_status(crate::models::JobStatus::Running);
                     claimed.push(job.clone());
                 }
@@ -297,5 +305,139 @@ mod tests {
             StoreError::AlreadyRunning(id) => assert_eq!(id, due_job.id),
             _ => panic!("Expected AlreadyRunning error"),
         }
+    }
+
+    #[test]
+    fn test_claim_due_jobs_comprehensive_status_and_timing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store_file = temp_dir.path().join("jobs.json");
+        let store = JobStore::new_with_path(&store_file);
+
+        let now = Utc::now();
+        let past = now - Duration::minutes(5);
+        let future = now + Duration::minutes(15);
+
+        // 1. Due Scheduled -> MUST claim
+        let mut job_due_scheduled = Job::new(
+            ProviderType::Codex,
+            "session-due-scheduled".to_string(),
+            temp_dir.path().to_path_buf(),
+            None,
+            past,
+            None,
+        ).unwrap();
+        job_due_scheduled.set_status(JobStatus::Scheduled);
+
+        // 2. Due Retrying -> MUST claim (the bugfix)
+        let mut job_due_retrying = Job::new(
+            ProviderType::Codex,
+            "session-due-retrying".to_string(),
+            temp_dir.path().to_path_buf(),
+            None,
+            past,
+            None,
+        ).unwrap();
+        job_due_retrying.set_status(JobStatus::Retrying);
+
+        // 3. Future Scheduled -> MUST NOT claim
+        let mut job_future_scheduled = Job::new(
+            ProviderType::Codex,
+            "session-future-scheduled".to_string(),
+            temp_dir.path().to_path_buf(),
+            None,
+            future,
+            None,
+        ).unwrap();
+        job_future_scheduled.set_status(JobStatus::Scheduled);
+
+        // 4. Future Retrying -> MUST NOT claim
+        let mut job_future_retrying = Job::new(
+            ProviderType::Codex,
+            "session-future-retrying".to_string(),
+            temp_dir.path().to_path_buf(),
+            None,
+            future,
+            None,
+        ).unwrap();
+        job_future_retrying.set_status(JobStatus::Retrying);
+
+        // 5. Due Running -> MUST NOT claim
+        let mut job_due_running = Job::new(
+            ProviderType::Codex,
+            "session-due-running".to_string(),
+            temp_dir.path().to_path_buf(),
+            None,
+            past,
+            None,
+        ).unwrap();
+        job_due_running.set_status(JobStatus::Running);
+
+        // 6. Due Succeeded -> MUST NOT claim
+        let mut job_due_succeeded = Job::new(
+            ProviderType::Codex,
+            "session-due-succeeded".to_string(),
+            temp_dir.path().to_path_buf(),
+            None,
+            past,
+            None,
+        ).unwrap();
+        job_due_succeeded.set_status(JobStatus::Succeeded);
+
+        // 7. Due Failed -> MUST NOT claim
+        let mut job_due_failed = Job::new(
+            ProviderType::Codex,
+            "session-due-failed".to_string(),
+            temp_dir.path().to_path_buf(),
+            None,
+            past,
+            None,
+        ).unwrap();
+        job_due_failed.set_status(JobStatus::Failed);
+
+        // 8. Due Cancelled -> MUST NOT claim
+        let mut job_due_cancelled = Job::new(
+            ProviderType::Codex,
+            "session-due-cancelled".to_string(),
+            temp_dir.path().to_path_buf(),
+            None,
+            past,
+            None,
+        ).unwrap();
+        job_due_cancelled.set_status(JobStatus::Cancelled);
+
+        // Insert all jobs
+        store.insert_job(job_due_scheduled.clone()).unwrap();
+        store.insert_job(job_due_retrying.clone()).unwrap();
+        store.insert_job(job_future_scheduled.clone()).unwrap();
+        store.insert_job(job_future_retrying.clone()).unwrap();
+        store.insert_job(job_due_running.clone()).unwrap();
+        store.insert_job(job_due_succeeded.clone()).unwrap();
+        store.insert_job(job_due_failed.clone()).unwrap();
+        store.insert_job(job_due_cancelled.clone()).unwrap();
+
+        // Execution of first claim
+        let claimed = store.claim_due_jobs(now).unwrap();
+
+        // Exactly 2 jobs must be claimed: job_due_scheduled and job_due_retrying
+        assert_eq!(claimed.len(), 2, "Expected exactly 2 claimed jobs, got: {:?}", claimed.iter().map(|j| (&j.id, &j.status)).collect::<Vec<_>>());
+
+        let claimed_ids: Vec<String> = claimed.iter().map(|j| j.id.clone()).collect();
+        assert!(claimed_ids.contains(&job_due_scheduled.id), "Due Scheduled job should be claimed");
+        assert!(claimed_ids.contains(&job_due_retrying.id), "Due Retrying job should be claimed");
+
+        // Both must have been transitioned to Running
+        for job in &claimed {
+            assert_eq!(job.status, JobStatus::Running);
+        }
+
+        // Verify state in store
+        let in_store_scheduled = store.get_job(&job_due_scheduled.id).unwrap().unwrap();
+        assert_eq!(in_store_scheduled.status, JobStatus::Running);
+        let in_store_retrying = store.get_job(&job_due_retrying.id).unwrap().unwrap();
+        assert_eq!(in_store_retrying.status, JobStatus::Running);
+
+        // Second tick claim immediately after: MUST return 0 jobs (both now Running)
+        let second_claim = store.claim_due_jobs(now).unwrap();
+        assert_eq!(second_claim.len(), 0, "Second claim must not re-claim newly running jobs");
     }
 }

@@ -92,7 +92,7 @@ export const LogsDrawer: React.FC<LogsDrawerProps> = ({ job, open, onClose }) =>
       </div>
 
       {job.execution_history.length === 0 ? (
-        <Empty description="まだ実行履歴はありません（指定時刻に自動実行されます）" />
+        <Empty description="まだ実行履歴はありません（指定時刻以降、次回のスケジューラ確認時に実行されます）" />
       ) : (
         <Timeline
           items={job.execution_history.map((att: ExecutionAttempt, index: number) => {

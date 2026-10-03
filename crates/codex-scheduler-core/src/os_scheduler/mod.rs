@@ -16,7 +16,7 @@ pub enum SchedulerError {
     InvalidExecutable(String),
     #[error("Expected executable does not exist: {0}")]
     ExecutableNotFound(String),
-    #[error("On macOS, scheduler registration must be performed via Codex Scheduler.app, not from CLI")]
+    #[error("On macOS, scheduler registration must be performed via Codex Scheduler.app before using CLI scheduling")]
     DesktopAppRequired,
 }
 
@@ -26,6 +26,11 @@ pub trait SchedulerBackend: Send + Sync {
 
     /// 常設スケジューラサービスが登録されているか確認する
     fn is_scheduler_installed(&self) -> bool;
+
+    /// 常設スケジューラサービスが現在のアーキテクチャで実際に予約実行可能（正常に稼働可能）な状態か判定する
+    fn is_scheduler_ready(&self) -> bool {
+        self.is_scheduler_installed()
+    }
 
     /// 登録済みのスケジューラサービスが指定された実行ファイルパスと一致しているか確認する
     fn is_scheduler_path_matched(&self, exe_path: &Path) -> bool;

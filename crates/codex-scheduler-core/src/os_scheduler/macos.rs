@@ -93,13 +93,21 @@ impl MacOsLaunchdScheduler {
         )
     }
 
-    /// Safely executes `launchctl unload <plist>` and ensures errors other than "not loaded" are strictly propagated.
+    /// Safely executes `launchctl unload <plist>` and ensures errors other than explicit "not loaded" are strictly propagated.
     pub fn safe_launchctl_unload(plist_path: &Path) -> Result<(), SchedulerError> {
         let output = Command::new("launchctl")
             .arg("unload")
             .arg(plist_path)
             .output()?;
 
+        Self::check_launchctl_unload_output(plist_path, &output)
+    }
+
+    /// Evaluates launchctl unload command output. Non-zero exit code is always an error unless explicitly confirmed not loaded.
+    pub fn check_launchctl_unload_output(
+        plist_path: &Path,
+        output: &std::process::Output,
+    ) -> Result<(), SchedulerError> {
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             let err_trimmed = err.trim();
@@ -108,15 +116,48 @@ impl MacOsLaunchdScheduler {
             let is_not_loaded = err_trimmed.contains("Could not find specified service")
                 || err_trimmed.contains("Not loaded")
                 || err_trimmed.contains("No such process");
-            if !is_not_loaded && !err_trimmed.is_empty() {
-                return Err(SchedulerError::CommandFailed(format!(
-                    "launchctl unload failed for {}: {}",
-                    plist_path.display(),
-                    err_trimmed
-                )));
+            if is_not_loaded {
+                return Ok(());
             }
+
+            let detail = if !err_trimmed.is_empty() {
+                err_trimmed.to_string()
+            } else {
+                let stdout_trimmed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                format!(
+                    "exit status: {:?}{}",
+                    output.status.code(),
+                    if !stdout_trimmed.is_empty() {
+                        format!(", stdout: {}", stdout_trimmed)
+                    } else {
+                        String::new()
+                    }
+                )
+            };
+
+            return Err(SchedulerError::CommandFailed(format!(
+                "launchctl unload failed for {}: {}",
+                plist_path.display(),
+                detail
+            )));
         }
         Ok(())
+    }
+
+    /// Extracts the target executable path from a launchd plist content string.
+    pub fn extract_executable_path_from_plist(content: &str) -> Option<PathBuf> {
+        let prog_args_idx = content.find("<key>ProgramArguments</key>")?;
+        let after_prog_args = &content[prog_args_idx..];
+        let array_start = after_prog_args.find("<array>")?;
+        let after_array = &after_prog_args[array_start..];
+        let string_start = after_array.find("<string>")? + "<string>".len();
+        let string_end = after_array[string_start..].find("</string>")? + string_start;
+        let exe_str = after_array[string_start..string_end].trim();
+        if exe_str.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(exe_str))
+        }
     }
 
     /// 過去バージョンで作成されたジョブ個別plist（com.codexscheduler.job.*.plist）を検出してアンロード・削除
@@ -125,10 +166,7 @@ impl MacOsLaunchdScheduler {
             return Ok(());
         }
 
-        let entries = match fs::read_dir(&self.launch_agents_dir) {
-            Ok(e) => e,
-            Err(_) => return Ok(()),
-        };
+        let entries = fs::read_dir(&self.launch_agents_dir)?;
 
         for entry in entries.flatten() {
             let path = entry.path();
@@ -226,6 +264,60 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
 
     fn is_scheduler_installed(&self) -> bool {
         self.scheduler_plist_path().exists()
+    }
+
+    fn is_scheduler_ready(&self) -> bool {
+        let plist_path = self.scheduler_plist_path();
+        if !plist_path.exists() {
+            return false;
+        }
+
+        let content = match fs::read_to_string(&plist_path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        // 1. ProgramArguments に --scheduler-tick が含まれていること
+        if !content.contains("<string>--scheduler-tick</string>") {
+            return false;
+        }
+
+        // 2. 実行ファイルパスを抽出
+        let exe_path = match Self::extract_executable_path_from_plist(&content) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        // 3. codex-scheduler-cli を指していないこと
+        if let Some(file_name) = exe_path.file_name().and_then(|n| n.to_str()) {
+            if file_name.starts_with("codex-scheduler-cli") {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        // 4. 実行ファイルが絶対パスであること
+        if !exe_path.is_absolute() {
+            return false;
+        }
+
+        // 5. 実行ファイルが実際にディスク上に存在すること
+        if !exe_path.exists() {
+            return false;
+        }
+
+        // 6. launchctl list dev.codexscheduler.scheduler が成功（loaded）していること
+        let output = match Command::new("launchctl")
+            .arg("list")
+            .arg(SCHEDULER_LABEL)
+            .output()
+        {
+            Ok(out) => out,
+            Err(_) => return false,
+        };
+
+        output.status.success()
     }
 
     fn is_scheduler_path_matched(&self, app_executable_path: &Path) -> bool {
@@ -401,5 +493,155 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extract_executable_path_from_plist() {
+        let sample_plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui</string>
+        <string>--scheduler-tick</string>
+    </array>
+</dict>
+</plist>"#;
+        let extracted = MacOsLaunchdScheduler::extract_executable_path_from_plist(sample_plist);
+        assert_eq!(
+            extracted,
+            Some(PathBuf::from("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui"))
+        );
+
+        let legacy_plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/test/.local/share/codex-scheduler/bin/codex-scheduler-cli</string>
+        <string>tick</string>
+    </array>
+</dict>
+</plist>"#;
+        let legacy_extracted = MacOsLaunchdScheduler::extract_executable_path_from_plist(legacy_plist);
+        assert_eq!(
+            legacy_extracted,
+            Some(PathBuf::from("/Users/test/.local/share/codex-scheduler/bin/codex-scheduler-cli"))
+        );
+
+        let invalid_plist = "<dict></dict>";
+        assert_eq!(MacOsLaunchdScheduler::extract_executable_path_from_plist(invalid_plist), None);
+    }
+
+    #[test]
+    fn test_is_scheduler_ready_rejects_legacy_or_invalid_plist() {
+        let temp_dir = std::env::temp_dir().join(format!("test-ready-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+        let plist_file = scheduler.scheduler_plist_path();
+
+        // 1. plistが存在しない -> false
+        assert!(!scheduler.is_scheduler_ready());
+
+        // 2. 旧Worker plist（codex-scheduler-cli tick）が存在する -> false (not ready!)
+        let old_content = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/test/.local/share/codex-scheduler/bin/codex-scheduler-cli</string>
+        <string>tick</string>
+    </array>
+</dict>
+</plist>"#,
+            SCHEDULER_LABEL
+        );
+        fs::write(&plist_file, old_content).unwrap();
+        assert!(!scheduler.is_scheduler_ready());
+
+        // 3. --scheduler-tick はあるが、実行可能ファイルが存在しないパス -> false
+        let nonexistent_app = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/non/existent/app/Contents/MacOS/codex-scheduler-gui</string>
+        <string>--scheduler-tick</string>
+    </array>
+</dict>
+</plist>"#,
+            SCHEDULER_LABEL
+        );
+        fs::write(&plist_file, nonexistent_app).unwrap();
+        assert!(!scheduler.is_scheduler_ready());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_check_launchctl_unload_output() {
+        use std::os::unix::process::ExitStatusExt;
+        let test_plist = Path::new("/tmp/test.plist");
+
+        // 1. Success exit status
+        let success_out = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert!(MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &success_out).is_ok());
+
+        // 2. Not loaded error strings -> Treated as Ok
+        for msg in &[
+            "Could not find specified service",
+            "/tmp/test.plist: Not loaded",
+            "No such process",
+        ] {
+            let not_loaded_out = std::process::Output {
+                status: std::process::ExitStatus::from_raw(3 << 8),
+                stdout: Vec::new(),
+                stderr: msg.as_bytes().to_vec(),
+            };
+            assert!(
+                MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &not_loaded_out).is_ok(),
+                "Expected Ok for not-loaded message: {}",
+                msg
+            );
+        }
+
+        // 3. Failure exit status with empty stderr -> Must return Error (do NOT swallow!)
+        let empty_stderr_fail = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: b"some stdout".to_vec(),
+            stderr: Vec::new(),
+        };
+        let err = MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &empty_stderr_fail).unwrap_err();
+        match err {
+            SchedulerError::CommandFailed(ref s) => {
+                assert!(s.contains("exit status"));
+                assert!(s.contains("some stdout"));
+            }
+            _ => panic!("Expected CommandFailed error, got: {:?}", err),
+        }
+
+        // 4. Failure exit status with permission denied or other error -> Must return Error
+        let perm_fail = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"Permission denied".to_vec(),
+        };
+        let err2 = MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &perm_fail).unwrap_err();
+        match err2 {
+            SchedulerError::CommandFailed(ref s) => {
+                assert!(s.contains("Permission denied"));
+            }
+            _ => panic!("Expected CommandFailed error, got: {:?}", err2),
+        }
     }
 }

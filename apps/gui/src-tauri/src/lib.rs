@@ -52,6 +52,7 @@ pub struct SystemInfo {
     pub codex_path: Option<String>,
     pub scheduler_executable_path: String,
     pub scheduler_installed: bool,
+    pub scheduler_ready: bool,
     pub scheduler_path_matched: bool,
     pub scheduler_error: Option<String>,
     pub jobs_store_path: String,
@@ -157,6 +158,7 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
 
     let scheduler_executable_path = service.exe_path().to_string_lossy().to_string();
     let scheduler_installed = service.is_scheduler_installed();
+    let scheduler_ready = service.is_scheduler_ready();
     let scheduler_path_matched = service.is_scheduler_path_matched();
     let scheduler_error = state.scheduler_error.lock().ok().and_then(|e| e.clone());
     let jobs_store_path = service.store().path().to_string_lossy().to_string();
@@ -168,6 +170,7 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
         codex_path,
         scheduler_executable_path: scheduler_executable_path.clone(),
         scheduler_installed,
+        scheduler_ready,
         scheduler_path_matched,
         scheduler_error,
         jobs_store_path,

@@ -183,6 +183,7 @@ export async function getSystemInfo(): Promise<SystemInfo> {
     codex_path: "/opt/homebrew/bin/codex",
     scheduler_executable_path: "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui",
     scheduler_installed: true,
+    scheduler_ready: true,
     scheduler_path_matched: true,
     scheduler_error: null,
     jobs_store_path: "~/.codex-scheduler/jobs.json",

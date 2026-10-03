@@ -58,6 +58,7 @@ export interface SystemInfo {
   codex_path: string | null;
   scheduler_executable_path: string;
   scheduler_installed: boolean;
+  scheduler_ready: boolean;
   scheduler_path_matched: boolean;
   scheduler_error: string | null;
   jobs_store_path: string;

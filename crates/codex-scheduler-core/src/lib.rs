@@ -112,6 +112,10 @@ impl SchedulerService {
         self.scheduler.is_scheduler_installed()
     }
 
+    pub fn is_scheduler_ready(&self) -> bool {
+        self.scheduler.is_scheduler_ready()
+    }
+
     pub fn is_scheduler_path_matched(&self) -> bool {
         match &self.desktop_exe_path {
             Some(path) => self.scheduler.is_scheduler_path_matched(path),
@@ -132,14 +136,15 @@ impl SchedulerService {
 
         // If invoked from Desktop GUI (desktop_exe_path is Some), ensure scheduler is registered with app path.
         // If invoked from CLI (desktop_exe_path is None):
-        // - on macOS: verify scheduler is already installed by the Desktop App; do NOT overwrite LaunchAgent with CLI binary!
+        // - on macOS: verify scheduler is READY (properly configured for headless execution and loaded);
+        //   do NOT accept legacy/unmigrated plist!
         // - on non-macOS: proceed.
         if let Some(path) = &self.desktop_exe_path {
             self.scheduler.ensure_scheduler_installed(path)?;
         } else {
             #[cfg(target_os = "macos")]
             {
-                if !self.is_scheduler_installed() {
+                if !self.is_scheduler_ready() {
                     return Err(CoreError::Scheduler(os_scheduler::SchedulerError::DesktopAppRequired));
                 }
             }

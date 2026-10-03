@@ -51,14 +51,17 @@ Status: Approved
   - `os_scheduler/macos.rs`:
     - `generate_scheduler_plist_content(app_executable_path: &Path)`: 引数を `app_executable_path` と `--scheduler-tick` に更新。
     - `ensure_scheduler_installed`: `codex-scheduler-cli` が渡された場合は `SchedulerError::DesktopAppRequired` で明示拒絶。既存 plist が新 executable パスと不一致の場合は再登録。
-    - `safe_launchctl_unload`: 未ロード時（"Could not find specified service", "Not loaded" 等）以外のエラーを `SchedulerError::CommandFailed` として厳格伝播。
+    - `is_scheduler_ready`: 旧plist（`codex-scheduler-cli` 参照）や未ロード状態を排他し、現行アーキテクチャで実際に稼働可能かを検証。
+    - `safe_launchctl_unload` / `check_launchctl_unload_output`: 明示的未ロード時（"Could not find specified service", "Not loaded" 等）以外の失敗（stderr空含む）を `SchedulerError::CommandFailed` として厳格伝播（false-success排除）。
+    - `cleanup_legacy_job_plists`: `fs::read_dir` エラーの伝播。
   - `os_scheduler/mod.rs`:
     - `SchedulerError::DesktopAppRequired` を追加。
+    - `SchedulerBackend::is_scheduler_ready` を追加。
   - `store.rs`:
     - `claim_due_jobs(now: DateTime<Utc>) -> Result<Vec<Job>, StoreError>`: 排他的に due job を取得し `Running` に更新して永続化。
   - `lib.rs`:
     - `execute_tick() -> Result<Vec<Job>, CoreError>`: core shared logic として tick 処理を提供。
-    - `SchedulerService::new_for_cli`: CLIツール向けコンストラクタを提供し、CLI自身をLaunchAgentへ登録できないよう責務を分離。macOSでCLIからジョブ登録時、未インストールであれば `DesktopAppRequired` を返却。
+    - `SchedulerService::new_for_cli`: CLIツール向けコンストラクタを提供し、CLI自身をLaunchAgentへ登録できないよう責務を分離。macOSでCLIからジョブ登録時、未インストールまたは旧plist（not ready）であれば `DesktopAppRequired` を返却。
 - `crates/codex-scheduler-cli`:
   - `main.rs`: `SchedulerService::new_for_cli` を使用し、macOSでの `install-scheduler` ではCLI自身を登録させずDesktop Appの起動を案内。
 - `.github/workflows/release.yml`:

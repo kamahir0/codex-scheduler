@@ -190,6 +190,7 @@ async fn test_cli_service_guards_against_launchagent_registration() {
 
     struct MockScheduler {
         installed: bool,
+        ready: bool,
     }
     impl SchedulerBackend for MockScheduler {
         fn ensure_scheduler_installed(&self, _path: &Path) -> Result<(), SchedulerError> {
@@ -197,6 +198,9 @@ async fn test_cli_service_guards_against_launchagent_registration() {
         }
         fn is_scheduler_installed(&self) -> bool {
             self.installed
+        }
+        fn is_scheduler_ready(&self) -> bool {
+            self.ready
         }
         fn is_scheduler_path_matched(&self, _path: &Path) -> bool {
             self.installed
@@ -219,7 +223,7 @@ async fn test_cli_service_guards_against_launchagent_registration() {
     let cli_service = SchedulerService::with_scheduler(
         store.clone(),
         None,
-        Box::new(MockScheduler { installed: false }),
+        Box::new(MockScheduler { installed: false, ready: false }),
     );
     assert!(cli_service.desktop_exe_path().is_none());
 
@@ -248,11 +252,33 @@ async fn test_cli_service_guards_against_launchagent_registration() {
             _ => panic!("Expected DesktopAppRequired, got {:?}", schedule_err),
         }
 
-        // Case 3: If scheduler IS installed (e.g. by Desktop app), scheduling from CLI succeeds without overwriting scheduler
+        // Case 3: If legacy plist exists (installed = true, BUT ready = false), scheduling from CLI must fail with DesktopAppRequired
+        let legacy_cli_service = SchedulerService::with_scheduler(
+            store.clone(),
+            None,
+            Box::new(MockScheduler { installed: true, ready: false }),
+        );
+        let legacy_schedule_err = legacy_cli_service
+            .schedule_job(
+                ProviderType::Codex,
+                "session-cli-legacy".to_string(),
+                temp_dir.path().to_path_buf(),
+                Some("cli prompt legacy".to_string()),
+                Utc::now() + chrono::Duration::hours(1),
+                None,
+            )
+            .unwrap_err();
+
+        match legacy_schedule_err {
+            codex_scheduler_core::CoreError::Scheduler(SchedulerError::DesktopAppRequired) => {}
+            _ => panic!("Expected DesktopAppRequired for unmigrated legacy plist, got {:?}", legacy_schedule_err),
+        }
+
+        // Case 4: If scheduler IS installed AND READY (e.g. by Desktop app), scheduling from CLI succeeds without overwriting scheduler
         let installed_cli_service = SchedulerService::with_scheduler(
             store.clone(),
             None,
-            Box::new(MockScheduler { installed: true }),
+            Box::new(MockScheduler { installed: true, ready: true }),
         );
         let scheduled_job = installed_cli_service
             .schedule_job(
@@ -263,7 +289,7 @@ async fn test_cli_service_guards_against_launchagent_registration() {
                 Utc::now() + chrono::Duration::hours(1),
                 None,
             )
-            .expect("Should schedule when already installed");
+            .expect("Should schedule when already installed and ready");
 
         assert_eq!(scheduled_job.session_id, "session-cli-ok");
     }

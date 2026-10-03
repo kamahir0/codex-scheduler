@@ -94,6 +94,24 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
             {systemInfo.scheduler_executable_path}
           </Text>
         </Descriptions.Item>
+        <Descriptions.Item label="OSスケジューラ常設サービス">
+          {systemInfo.scheduler_installed ? (
+            <Tag color="green">
+              {systemInfo.os === "macos"
+                ? "登録済 (単一LaunchAgent: dev.codexscheduler.scheduler)"
+                : "登録済 (Task Scheduler)"}
+            </Tag>
+          ) : (
+            <Tag color="orange">未登録 (起動時またはジョブ作成時に自動登録)</Tag>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="スケジューラ稼働準備状態">
+          {systemInfo.scheduler_ready ? (
+            <Tag color="green">準備完了 (Ready / Loaded)</Tag>
+          ) : (
+            <Tag color="orange">未完了 (Not Ready)</Tag>
+          )}
+        </Descriptions.Item>
         <Descriptions.Item label="実行パス一致状態">
           {systemInfo.scheduler_path_matched ? (
             <Tag color="green">一致 (Matched)</Tag>
@@ -105,17 +123,6 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
           <Text copyable style={{ fontSize: 12, fontFamily: "monospace" }}>
             {systemInfo.jobs_store_path}
           </Text>
-        </Descriptions.Item>
-        <Descriptions.Item label="OSスケジューラ常設サービス">
-          {systemInfo.scheduler_installed ? (
-            <Tag color="green">
-              {systemInfo.os === "macos"
-                ? "登録済 (単一LaunchAgent: dev.codexscheduler.scheduler)"
-                : "登録済 (Task Scheduler)"}
-            </Tag>
-          ) : (
-            <Tag color="orange">未登録 (起動時またはジョブ作成時に自動登録)</Tag>
-          )}
         </Descriptions.Item>
         <Descriptions.Item label="OSスケジューラ権限">
           <Tag color="cyan">

@@ -31,7 +31,8 @@ pub enum CoreError {
 
 pub struct SchedulerService {
     store: JobStore,
-    desktop_exe_path: Option<PathBuf>,
+    exe_path: Option<PathBuf>,
+    is_desktop: bool,
     scheduler: std::sync::Arc<dyn os_scheduler::SchedulerBackend>,
 }
 
@@ -40,28 +41,51 @@ impl SchedulerService {
     pub fn new(store: JobStore, desktop_exe_path: PathBuf) -> Self {
         Self {
             store,
-            desktop_exe_path: Some(desktop_exe_path),
+            exe_path: Some(desktop_exe_path),
+            is_desktop: true,
             scheduler: std::sync::Arc::from(get_platform_scheduler()),
         }
     }
 
-    /// Creates a scheduler service for CLI tools where the running CLI binary must NOT be registered as the LaunchAgent.
+    /// Explicit constructor for Desktop GUI application.
+    pub fn new_desktop(store: JobStore, desktop_exe_path: PathBuf) -> Self {
+        Self::new(store, desktop_exe_path)
+    }
+
+    /// Creates a scheduler service for CLI tools.
     pub fn new_for_cli(store: JobStore) -> Self {
+        let exe_path = std::env::current_exe().ok();
         Self {
             store,
-            desktop_exe_path: None,
+            exe_path,
+            is_desktop: false,
+            scheduler: std::sync::Arc::from(get_platform_scheduler()),
+        }
+    }
+
+    /// Creates a scheduler service for CLI tools with an explicit executable path.
+    pub fn new_for_cli_with_path(store: JobStore, cli_exe_path: PathBuf) -> Self {
+        Self {
+            store,
+            exe_path: Some(cli_exe_path),
+            is_desktop: false,
             scheduler: std::sync::Arc::from(get_platform_scheduler()),
         }
     }
 
     pub fn with_scheduler(
         store: JobStore,
-        desktop_exe_path: Option<PathBuf>,
+        exe_path: Option<PathBuf>,
         scheduler: Box<dyn os_scheduler::SchedulerBackend>,
     ) -> Self {
+        let is_desktop = exe_path
+            .as_deref()
+            .map(os_scheduler::macos::MacOsLaunchdScheduler::is_desktop_executable)
+            .unwrap_or(false);
         Self {
             store,
-            desktop_exe_path,
+            exe_path,
+            is_desktop,
             scheduler: std::sync::Arc::from(scheduler),
         }
     }
@@ -76,11 +100,15 @@ impl SchedulerService {
     }
 
     pub fn desktop_exe_path(&self) -> Option<&Path> {
-        self.desktop_exe_path.as_deref()
+        if self.is_desktop {
+            self.exe_path.as_deref()
+        } else {
+            None
+        }
     }
 
     pub fn exe_path(&self) -> &Path {
-        self.desktop_exe_path
+        self.exe_path
             .as_deref()
             .unwrap_or_else(|| Path::new(""))
     }
@@ -89,21 +117,32 @@ impl SchedulerService {
         self.exe_path()
     }
 
+    pub fn get_scheduler_owner(&self) -> os_scheduler::SchedulerOwner {
+        self.scheduler.get_scheduler_owner()
+    }
+
+    pub fn get_scheduler_executable_path(&self) -> Option<PathBuf> {
+        self.scheduler.get_scheduler_executable_path()
+    }
+
+    pub fn scheduler(&self) -> &dyn os_scheduler::SchedulerBackend {
+        &*self.scheduler
+    }
+
     pub fn ensure_scheduler(&self) -> Result<(), CoreError> {
-        match &self.desktop_exe_path {
-            Some(path) => {
-                self.scheduler.ensure_scheduler_installed(path)?;
-                Ok(())
+        if let Some(path) = &self.exe_path {
+            self.scheduler.ensure_scheduler_installed(path)?;
+            Ok(())
+        } else {
+            #[cfg(target_os = "macos")]
+            {
+                Err(CoreError::Scheduler(os_scheduler::SchedulerError::ExecutableNotFound(
+                    "No executable path configured for scheduler installation".to_string(),
+                )))
             }
-            None => {
-                #[cfg(target_os = "macos")]
-                {
-                    Err(CoreError::Scheduler(os_scheduler::SchedulerError::DesktopAppRequired))
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    Ok(())
-                }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Ok(())
             }
         }
     }
@@ -117,7 +156,7 @@ impl SchedulerService {
     }
 
     pub fn is_scheduler_path_matched(&self) -> bool {
-        match &self.desktop_exe_path {
+        match &self.exe_path {
             Some(path) => self.scheduler.is_scheduler_path_matched(path),
             None => false,
         }
@@ -134,18 +173,32 @@ impl SchedulerService {
     ) -> Result<Job, CoreError> {
         let job = Job::new(provider, session_id, cwd, prompt, scheduled_at, retry_policy)?;
 
-        // If invoked from Desktop GUI (desktop_exe_path is Some), ensure scheduler is registered with app path.
-        // If invoked from CLI (desktop_exe_path is None):
-        // - on macOS: verify scheduler is READY (properly configured for headless execution and loaded);
-        //   do NOT accept legacy/unmigrated plist!
+        // If invoked from Desktop GUI (is_desktop is true), ensure scheduler is registered with app path.
+        // If invoked from CLI (is_desktop is false):
+        // - on macOS: if scheduler is ready (Desktop-owned or CLI-owned), keep existing LaunchAgent.
+        //   If NOT ready (None, Legacy, stale), safely ensure using current CLI executable.
         // - on non-macOS: proceed.
-        if let Some(path) = &self.desktop_exe_path {
-            self.scheduler.ensure_scheduler_installed(path)?;
+        if self.is_desktop {
+            if let Some(path) = &self.exe_path {
+                self.scheduler.ensure_scheduler_installed(path)?;
+            }
         } else {
             #[cfg(target_os = "macos")]
             {
                 if !self.is_scheduler_ready() {
-                    return Err(CoreError::Scheduler(os_scheduler::SchedulerError::DesktopAppRequired));
+                    if let Some(cli_path) = &self.exe_path {
+                        self.scheduler.ensure_scheduler_installed(cli_path)?;
+                    } else {
+                        return Err(CoreError::Scheduler(os_scheduler::SchedulerError::ExecutableNotFound(
+                            "CLI executable path could not be resolved".to_string(),
+                        )));
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Some(path) = &self.exe_path {
+                    let _ = self.scheduler.ensure_scheduler_installed(path);
                 }
             }
         }

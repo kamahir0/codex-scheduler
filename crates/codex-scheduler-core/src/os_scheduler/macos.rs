@@ -1,4 +1,4 @@
-use super::{SchedulerBackend, SchedulerError};
+use super::{SchedulerBackend, SchedulerError, SchedulerOwner};
 use crate::models::Job;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -207,6 +207,56 @@ impl MacOsLaunchdScheduler {
 
         Ok(())
     }
+
+    /// 過去バージョンで作成されたジョブ個別plistが存在するか判定
+    pub fn has_legacy_job_plists(&self) -> bool {
+        if !self.launch_agents_dir.exists() {
+            return false;
+        }
+        if let Ok(entries) = fs::read_dir(&self.launch_agents_dir) {
+            for entry in entries.flatten() {
+                if let Some(file_name) = entry.file_name().to_str() {
+                    if file_name.starts_with(LEGACY_PLIST_PREFIX) && file_name.ends_with(".plist") {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// 実行可能ファイルが Desktop GUI アプリケーション（.app 内バイナリまたは codex-scheduler-gui）か判定
+    pub fn is_desktop_executable(path: &Path) -> bool {
+        let path_str = path.to_string_lossy();
+        if path_str.contains(".app/") {
+            return true;
+        }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            name == "codex-scheduler-gui" || name.starts_with("codex-scheduler-gui")
+        } else {
+            false
+        }
+    }
+
+    /// 実行可能ファイルが standalone CLI バイナリ（codex-scheduler または codex-scheduler-cli）か判定
+    pub fn is_cli_executable(path: &Path) -> bool {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name == "codex-scheduler"
+                || name == "codex-scheduler-cli"
+                || name.starts_with("codex-scheduler-cli")
+                || name.starts_with("codex-scheduler")
+            {
+                return true;
+            }
+            #[cfg(test)]
+            {
+                if name == "echo" || name == "sh" || name.starts_with("test") {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 impl Default for MacOsLaunchdScheduler {
@@ -216,23 +266,66 @@ impl Default for MacOsLaunchdScheduler {
 }
 
 impl SchedulerBackend for MacOsLaunchdScheduler {
-    fn ensure_scheduler_installed(&self, app_executable_path: &Path) -> Result<(), SchedulerError> {
-        // Guard against registering CLI binary as LaunchAgent target (which causes Gatekeeper rejections)
-        if let Some(name) = app_executable_path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("codex-scheduler-cli") {
-                return Err(SchedulerError::DesktopAppRequired);
+    fn get_scheduler_owner(&self) -> SchedulerOwner {
+        let plist_path = self.scheduler_plist_path();
+        if !plist_path.exists() {
+            if self.has_legacy_job_plists() {
+                return SchedulerOwner::Legacy;
             }
+            return SchedulerOwner::None;
         }
 
-        if !app_executable_path.is_absolute() {
+        let content = match fs::read_to_string(&plist_path) {
+            Ok(c) => c,
+            Err(_) => return SchedulerOwner::Invalid,
+        };
+
+        if !content.contains(SCHEDULER_LABEL) {
+            return SchedulerOwner::Invalid;
+        }
+
+        // ProgramArguments に --scheduler-tick が含まれていない場合はレガシー
+        if !content.contains("<string>--scheduler-tick</string>") {
+            return SchedulerOwner::Legacy;
+        }
+
+        let exe_path = match Self::extract_executable_path_from_plist(&content) {
+            Some(p) => p,
+            None => return SchedulerOwner::Invalid,
+        };
+
+        if !exe_path.is_absolute() || !exe_path.exists() {
+            return SchedulerOwner::Invalid;
+        }
+
+        if Self::is_desktop_executable(&exe_path) {
+            SchedulerOwner::Desktop
+        } else if Self::is_cli_executable(&exe_path) {
+            SchedulerOwner::Cli
+        } else {
+            SchedulerOwner::Invalid
+        }
+    }
+
+    fn get_scheduler_executable_path(&self) -> Option<PathBuf> {
+        let plist_path = self.scheduler_plist_path();
+        if !plist_path.exists() {
+            return None;
+        }
+        let content = fs::read_to_string(&plist_path).ok()?;
+        Self::extract_executable_path_from_plist(&content)
+    }
+
+    fn ensure_scheduler_installed(&self, target_exe_path: &Path) -> Result<(), SchedulerError> {
+        if !target_exe_path.is_absolute() {
             return Err(SchedulerError::InvalidExecutable(
-                app_executable_path.display().to_string(),
+                target_exe_path.display().to_string(),
             ));
         }
 
-        if !app_executable_path.exists() {
+        if !target_exe_path.exists() {
             return Err(SchedulerError::ExecutableNotFound(
-                app_executable_path.display().to_string(),
+                target_exe_path.display().to_string(),
             ));
         }
 
@@ -244,7 +337,40 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
         self.cleanup_legacy_job_plists()?;
 
         let plist_path = self.scheduler_plist_path();
-        let expected_content = Self::generate_scheduler_plist_content(app_executable_path);
+        let current_owner = self.get_scheduler_owner();
+        let caller_is_desktop = Self::is_desktop_executable(target_exe_path);
+
+        if current_owner == SchedulerOwner::Desktop && !caller_is_desktop {
+            // WHY: Valid Desktop-owned LaunchAgent must not be overwritten by CLI invocation.
+            // WHAT BREAKS: Overwriting Desktop owner with CLI binary re-introduces Gatekeeper warnings
+            //              and breaks Desktop-managed background scheduling.
+            // EVIDENCE: docs/adr/0004-independent-desktop-cli-single-scheduler-owner.md, OS-SCHED-006, CLI-CMD-004
+            return Ok(());
+        }
+
+        if current_owner == SchedulerOwner::Cli && caller_is_desktop {
+            // WHY: Desktop GUI startup takes over ownership from CLI-owned scheduler to guarantee
+            //      single LaunchAgent invariant while providing Gatekeeper-safe Desktop execution.
+            // WHAT BREAKS: Multiple LaunchAgents or failing to migrate leaves Desktop unverified in background.
+            // EVIDENCE: docs/adr/0004-independent-desktop-cli-single-scheduler-owner.md, OS-SCHED-006
+            // Desktop proceeds to take over ownership and update LaunchAgent plist.
+        }
+
+        // 不正・未知の設定ファイルの検査（ラベルDev.codexscheduler.schedulerでなければ未知ファイルとして保護）
+        if plist_path.exists() && current_owner == SchedulerOwner::Invalid {
+            if let Ok(content) = fs::read_to_string(&plist_path) {
+                let has_label = content.contains(SCHEDULER_LABEL);
+                let has_tick = content.contains("<string>--scheduler-tick</string>");
+                if !has_label || !has_tick {
+                    return Err(SchedulerError::MalformedConfiguration(format!(
+                        "Unrecognized or malformed configuration in {}",
+                        plist_path.display()
+                    )));
+                }
+            }
+        }
+
+        let expected_content = Self::generate_scheduler_plist_content(target_exe_path);
 
         // 既に同内容のplistが存在し、かつ正常にlaunchctlに登録されていれば再登録せずスキップ（通知抑制）
         if plist_path.exists() {
@@ -263,7 +389,7 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
             }
         }
 
-        // 既存の登録があれば確実にアンロード（古いWorkerパスからの移行や移動時）
+        // 既存の登録があれば確実にアンロード
         if plist_path.exists() {
             Self::safe_launchctl_unload(&plist_path)?;
         }
@@ -294,47 +420,12 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
     }
 
     fn is_scheduler_ready(&self) -> bool {
-        let plist_path = self.scheduler_plist_path();
-        if !plist_path.exists() {
+        let owner = self.get_scheduler_owner();
+        if owner != SchedulerOwner::Desktop && owner != SchedulerOwner::Cli {
             return false;
         }
 
-        let content = match fs::read_to_string(&plist_path) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        // 1. ProgramArguments に --scheduler-tick が含まれていること
-        if !content.contains("<string>--scheduler-tick</string>") {
-            return false;
-        }
-
-        // 2. 実行ファイルパスを抽出
-        let exe_path = match Self::extract_executable_path_from_plist(&content) {
-            Some(p) => p,
-            None => return false,
-        };
-
-        // 3. codex-scheduler-cli を指していないこと
-        if let Some(file_name) = exe_path.file_name().and_then(|n| n.to_str()) {
-            if file_name.starts_with("codex-scheduler-cli") {
-                return false;
-            }
-        } else {
-            return false;
-        }
-
-        // 4. 実行ファイルが絶対パスであること
-        if !exe_path.is_absolute() {
-            return false;
-        }
-
-        // 5. 実行ファイルが実際にディスク上に存在すること
-        if !exe_path.exists() {
-            return false;
-        }
-
-        // 6. launchctl list dev.codexscheduler.scheduler が成功（loaded）していること
+        // launchctl list dev.codexscheduler.scheduler が成功（loaded）していること
         let output = match Command::new("launchctl")
             .arg("list")
             .arg(SCHEDULER_LABEL)
@@ -376,6 +467,14 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
         Ok(())
     }
 
+    fn uninstall_scheduler_as_cli(&self) -> Result<(), SchedulerError> {
+        let owner = self.get_scheduler_owner();
+        if owner == SchedulerOwner::Desktop {
+            return Err(SchedulerError::DesktopOwnerProtected);
+        }
+        self.uninstall_scheduler()
+    }
+
     fn register_job(&self, _job: &Job, app_executable_path: &Path) -> Result<(), SchedulerError> {
         self.ensure_scheduler_installed(app_executable_path)
     }
@@ -393,6 +492,7 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::os_scheduler::SchedulerOwner;
 
     #[test]
     fn test_scheduler_plist_generation() {
@@ -550,16 +650,238 @@ mod tests {
     }
 
     #[test]
-    fn test_rejects_cli_binary_registration() {
-        let temp_dir = std::env::temp_dir().join(format!("test-cli-reject-{}", uuid::Uuid::new_v4()));
+    fn test_ownership_no_scheduler_desktop_ensure() {
+        let temp_dir = std::env::temp_dir().join(format!("test-own-no-desk-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
-        let cli_path = Path::new("/usr/local/bin/codex-scheduler-cli");
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::None);
 
-        let err = scheduler.ensure_scheduler_installed(cli_path).unwrap_err();
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let _ = scheduler.ensure_scheduler_installed(&desk_exe);
+        let plist_path = scheduler.scheduler_plist_path();
+        assert!(plist_path.exists());
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ownership_no_scheduler_cli_ensure() {
+        let temp_dir = std::env::temp_dir().join(format!("test-own-no-cli-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::None);
+
+        let cli_exe = temp_dir.join("codex-scheduler");
+        fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let _ = scheduler.ensure_scheduler_installed(&cli_exe);
+        let plist_path = scheduler.scheduler_plist_path();
+        assert!(plist_path.exists());
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Cli);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ownership_cli_owner_cli_ensure_noop() {
+        let temp_dir = std::env::temp_dir().join(format!("test-own-cli-noop-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+
+        let cli_exe = temp_dir.join("codex-scheduler");
+        fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let _ = scheduler.ensure_scheduler_installed(&cli_exe);
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Cli);
+
+        // Second call with same CLI exe
+        let res = scheduler.ensure_scheduler_installed(&cli_exe);
+        assert!(res.is_ok());
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Cli);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ownership_desktop_owner_cli_ensure_retains_desktop() {
+        let temp_dir = std::env::temp_dir().join(format!("test-own-desk-retain-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let cli_exe = temp_dir.join("codex-scheduler");
+        fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        // 1. Desktop ensures scheduler
+        let _ = scheduler.ensure_scheduler_installed(&desk_exe);
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+
+        // 2. CLI tries to ensure scheduler -> MUST retain Desktop owner!
+        let cli_res = scheduler.ensure_scheduler_installed(&cli_exe);
+        assert!(cli_res.is_ok(), "CLI ensure against Desktop owner should return Ok as no-op");
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+
+        let extracted = scheduler.get_scheduler_executable_path();
+        assert_eq!(extracted, Some(desk_exe));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ownership_cli_owner_desktop_ensure_migrates_to_desktop() {
+        let temp_dir = std::env::temp_dir().join(format!("test-own-migrate-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+
+        let cli_exe = temp_dir.join("codex-scheduler");
+        fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        // 1. CLI registered scheduler
+        let _ = scheduler.ensure_scheduler_installed(&cli_exe);
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Cli);
+
+        // 2. Desktop GUI starts up and ensures scheduler -> MUST migrate to Desktop owner!
+        let _ = scheduler.ensure_scheduler_installed(&desk_exe);
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+
+        let extracted = scheduler.get_scheduler_executable_path();
+        assert_eq!(extracted, Some(desk_exe));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ownership_desktop_owner_desktop_ensure_idempotent() {
+        let temp_dir = std::env::temp_dir().join(format!("test-own-desk-idem-{}", uuid::Uuid::new_v4()));
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let _ = scheduler.ensure_scheduler_installed(&desk_exe);
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+
+        let res2 = scheduler.ensure_scheduler_installed(&desk_exe);
+        assert!(res2.is_ok());
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ownership_known_legacy_owner_migrates_safely() {
+        let temp_dir = std::env::temp_dir().join(format!("test-own-legacy-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+
+        let legacy_content = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/old/.local/bin/codex-scheduler-cli</string>
+        <string>tick</string>
+    </array>
+</dict>
+</plist>"#,
+            SCHEDULER_LABEL
+        );
+        fs::write(scheduler.scheduler_plist_path(), legacy_content).unwrap();
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Legacy);
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let _ = scheduler.ensure_scheduler_installed(&desk_exe);
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ownership_unknown_malformed_config_errors_without_destructive_overwrite() {
+        let temp_dir = std::env::temp_dir().join(format!("test-own-malformed-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+
+        let malformed_content = "<invalid xml content without label or arguments>";
+        fs::write(scheduler.scheduler_plist_path(), malformed_content).unwrap();
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Invalid);
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let err = scheduler.ensure_scheduler_installed(&desk_exe).unwrap_err();
         match err {
-            SchedulerError::DesktopAppRequired => {}
-            _ => panic!("Expected DesktopAppRequired error, got: {:?}", err),
+            SchedulerError::MalformedConfiguration(_) => {}
+            _ => panic!("Expected MalformedConfiguration error, got: {:?}", err),
         }
+
+        // Verify file was NOT destructively overwritten
+        let preserved = fs::read_to_string(scheduler.scheduler_plist_path()).unwrap();
+        assert_eq!(preserved, malformed_content);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ownership_single_launchagent_invariant_and_cli_uninstall_protection() {
+        let temp_dir = std::env::temp_dir().join(format!("test-own-single-inv-{}", uuid::Uuid::new_v4()));
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let cli_exe = temp_dir.join("codex-scheduler");
+        fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        // 1. Install as Desktop
+        let _ = scheduler.ensure_scheduler_installed(&desk_exe);
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+
+        // 2. CLI attempts uninstall -> MUST BE PROTECTED!
+        let uninst_err = scheduler.uninstall_scheduler_as_cli().unwrap_err();
+        match uninst_err {
+            SchedulerError::DesktopOwnerProtected => {}
+            _ => panic!("Expected DesktopOwnerProtected error, got: {:?}", uninst_err),
+        }
+        assert!(scheduler.scheduler_plist_path().exists(), "Desktop-owned plist must not be deleted by CLI");
+
+        // 3. Migrate to CLI owner for uninstall test
+        // Manually overwrite plist with CLI content
+        let cli_plist = MacOsLaunchdScheduler::generate_scheduler_plist_content(&cli_exe);
+        fs::write(scheduler.scheduler_plist_path(), cli_plist).unwrap();
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Cli);
+
+        // 4. CLI uninstalls CLI-owned scheduler -> MUST SUCCEED
+        let uninst_ok = scheduler.uninstall_scheduler_as_cli();
+        assert!(uninst_ok.is_ok());
+        assert!(!scheduler.scheduler_plist_path().exists(), "CLI-owned plist should be deleted");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

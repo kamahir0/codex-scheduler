@@ -219,7 +219,7 @@ async fn test_cli_service_guards_against_launchagent_registration() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store = JobStore::new_with_path(temp_dir.path().join("cli_guard_jobs.json"));
 
-    // Case 1: CLI service cannot call ensure_scheduler on macOS
+    // Case 1: CLI service without executable path cannot ensure scheduler
     let cli_service = SchedulerService::with_scheduler(
         store.clone(),
         None,
@@ -231,11 +231,11 @@ async fn test_cli_service_guards_against_launchagent_registration() {
     {
         let ensure_err = cli_service.ensure_scheduler().unwrap_err();
         match ensure_err {
-            codex_scheduler_core::CoreError::Scheduler(SchedulerError::DesktopAppRequired) => {}
-            _ => panic!("Expected DesktopAppRequired, got {:?}", ensure_err),
+            codex_scheduler_core::CoreError::Scheduler(SchedulerError::ExecutableNotFound(_)) => {}
+            _ => panic!("Expected ExecutableNotFound when exe_path is None, got {:?}", ensure_err),
         }
 
-        // Case 2: If scheduler is not installed, scheduling from CLI fails with DesktopAppRequired
+        // Case 2: If scheduler is NOT ready and exe_path is None, schedule_job fails because it cannot auto-ensure
         let schedule_err = cli_service
             .schedule_job(
                 ProviderType::Codex,
@@ -248,33 +248,11 @@ async fn test_cli_service_guards_against_launchagent_registration() {
             .unwrap_err();
 
         match schedule_err {
-            codex_scheduler_core::CoreError::Scheduler(SchedulerError::DesktopAppRequired) => {}
-            _ => panic!("Expected DesktopAppRequired, got {:?}", schedule_err),
+            codex_scheduler_core::CoreError::Scheduler(SchedulerError::ExecutableNotFound(_)) => {}
+            _ => panic!("Expected ExecutableNotFound, got {:?}", schedule_err),
         }
 
-        // Case 3: If legacy plist exists (installed = true, BUT ready = false), scheduling from CLI must fail with DesktopAppRequired
-        let legacy_cli_service = SchedulerService::with_scheduler(
-            store.clone(),
-            None,
-            Box::new(MockScheduler { installed: true, ready: false }),
-        );
-        let legacy_schedule_err = legacy_cli_service
-            .schedule_job(
-                ProviderType::Codex,
-                "session-cli-legacy".to_string(),
-                temp_dir.path().to_path_buf(),
-                Some("cli prompt legacy".to_string()),
-                Utc::now() + chrono::Duration::hours(1),
-                None,
-            )
-            .unwrap_err();
-
-        match legacy_schedule_err {
-            codex_scheduler_core::CoreError::Scheduler(SchedulerError::DesktopAppRequired) => {}
-            _ => panic!("Expected DesktopAppRequired for unmigrated legacy plist, got {:?}", legacy_schedule_err),
-        }
-
-        // Case 4: If scheduler IS installed AND READY (e.g. by Desktop app), scheduling from CLI succeeds without overwriting scheduler
+        // Case 3: If scheduler IS installed AND READY (e.g. by Desktop app), scheduling from CLI succeeds without touching scheduler
         let installed_cli_service = SchedulerService::with_scheduler(
             store.clone(),
             None,
@@ -292,6 +270,26 @@ async fn test_cli_service_guards_against_launchagent_registration() {
             .expect("Should schedule when already installed and ready");
 
         assert_eq!(scheduled_job.session_id, "session-cli-ok");
+
+        // Case 4: CLI with valid executable path can auto-ensure scheduler when not yet installed
+        let dummy_cli = temp_dir.path().join("codex-scheduler");
+        std::fs::write(&dummy_cli, b"#!/bin/sh\nexit 0").unwrap();
+        let auto_ensure_service = SchedulerService::with_scheduler(
+            store.clone(),
+            Some(dummy_cli),
+            Box::new(MockScheduler { installed: false, ready: false }),
+        );
+        let auto_job = auto_ensure_service
+            .schedule_job(
+                ProviderType::Codex,
+                "session-auto".to_string(),
+                temp_dir.path().to_path_buf(),
+                Some("auto prompt".to_string()),
+                Utc::now() + chrono::Duration::hours(1),
+                None,
+            )
+            .expect("Should auto-ensure when CLI exe_path is present");
+        assert_eq!(auto_job.session_id, "session-auto");
     }
 }
 

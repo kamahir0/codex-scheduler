@@ -486,10 +486,45 @@ async fn test_retry_quota_backoff_and_subsequent_due_claim_lifecycle() {
 }
 
 #[cfg(windows)]
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(windows)]
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+#[cfg(windows)]
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+        let original = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, original }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(ref orig) = self.original {
+                std::env::set_var(self.key, orig);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
 #[tokio::test]
 async fn test_windows_codex_process_launch_and_tick() {
     use std::fs::{self, File};
     use std::io::Write;
+
+    let _lock = ENV_MUTEX.lock().unwrap();
 
     let temp_root = tempfile::tempdir().expect("create temp root");
     let npm_bin = temp_root.path().join("npm");
@@ -501,19 +536,61 @@ async fn test_windows_codex_process_launch_and_tick() {
     writeln!(f1, "#!/bin/sh\necho 'ERROR: POSIX SHIM EXECUTED'\nexit 193")
         .expect("write posix shim");
 
-    // 2. Create valid Windows .cmd launcher
+    // 2. Compile helper executable with rustc to faithfully capture logical argv and CWD without cmd interpretation issues
+    let helper_rs = temp_root.path().join("helper.rs");
+    let helper_exe = npm_bin.join("helper.exe");
+    fs::write(
+        &helper_rs,
+        r#"
+use std::env;
+use std::fs;
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir().unwrap();
+    let capture_file = env::var("CAPTURE_LOG").expect("CAPTURE_LOG env var");
+
+    let mut content = format!("CWD={}\n", cwd.display());
+    // args[0] is helper.exe, subsequent elements are the logical arguments
+    for arg in &args[1..] {
+        content.push_str(&format!("ARG={}\n", arg));
+    }
+    fs::write(&capture_file, content).expect("write capture log");
+    println!("CWD={}", cwd.display());
+}
+"#,
+    )
+    .expect("write helper.rs");
+
+    let rustc_status = std::process::Command::new("rustc")
+        .arg(&helper_rs)
+        .arg("-o")
+        .arg(&helper_exe)
+        .status()
+        .expect("compile helper.exe with rustc");
+    assert!(
+        rustc_status.success(),
+        "helper.exe compilation must succeed"
+    );
+
+    // 3. Create valid Windows .cmd launcher that delegates all arguments to helper.exe
     let cmd_launcher = npm_bin.join("codex.cmd");
     let mut f2 = File::create(&cmd_launcher).expect("create cmd launcher");
-    writeln!(f2, "@echo off\necho CWD=%CD%\necho ARGV=%*\nexit /b 0").expect("write cmd launcher");
+    writeln!(
+        f2,
+        "@echo off\n\"%~dp0helper.exe\" %*\nexit /b %ERRORLEVEL%"
+    )
+    .expect("write cmd launcher");
 
-    // Prepend npm_bin to PATH
+    // Setup capture file and RAII environment guards (mutex protected and restored on drop/panic)
+    let capture_log = temp_root.path().join("captured.log");
+    let _capture_guard = EnvVarGuard::set("CAPTURE_LOG", capture_log.as_os_str());
+
     let original_path = std::env::var_os("PATH").unwrap_or_default();
     let mut new_paths = vec![npm_bin.clone()];
     new_paths.extend(std::env::split_paths(&original_path));
     let joined_path = std::env::join_paths(new_paths).expect("join paths");
-    unsafe {
-        std::env::set_var("PATH", joined_path);
-    }
+    let _path_guard = EnvVarGuard::set("PATH", &joined_path);
 
     // Verify adapter resolves codex.cmd and ignores extensionless codex
     let adapter = codex_scheduler_core::adapter::codex::CodexAdapter::new();
@@ -523,15 +600,19 @@ async fn test_windows_codex_process_launch_and_tick() {
         "Adapter must resolve codex.cmd on Windows"
     );
 
-    // 3. Test execute_resume with spaces in cwd and shell metacharacters in prompt
+    // 4. Test execute_resume with spaces in cwd and shell metacharacters / injection sentinel in prompt
     let project_dir = temp_root.path().join("My Test Project With Spaces");
     fs::create_dir_all(&project_dir).expect("create project dir");
 
+    let marker_file = temp_root.path().join("INJECTED_SENTINEL.txt");
     let session_id = "sess-win-test-999";
-    let prompt = "fix & test | ping ^ <file> > /dev/null %PATH% !VAR! \"double quoted\"";
+    let prompt = format!(
+        "fix & echo INJECTED > \"{}\" | ping ^ <file> > /dev/null %PATH% !VAR! \"double quoted\"",
+        marker_file.display()
+    );
 
     let result = adapter
-        .execute_resume(session_id, &project_dir, prompt)
+        .execute_resume(session_id, &project_dir, &prompt)
         .await
         .expect("execute_resume must succeed");
 
@@ -543,7 +624,14 @@ async fn test_windows_codex_process_launch_and_tick() {
     assert_eq!(result.exit_code, Some(0));
     assert!(!result.is_quota_error);
 
-    // Verify cwd is preserved
+    // Verify injection sentinel marker file was NOT created (direct proof of shell injection safety)
+    assert!(
+        !marker_file.exists(),
+        "Shell injection occurred! Sentinel file {} was created",
+        marker_file.display()
+    );
+
+    // Verify stdout contains CWD
     assert!(
         result
             .stdout
@@ -552,14 +640,36 @@ async fn test_windows_codex_process_launch_and_tick() {
         result.stdout
     );
 
-    // Verify arguments are preserved
-    assert!(
-        result.stdout.contains("ARGV=exec resume sess-win-test-999"),
-        "stdout should contain command args: {}",
-        result.stdout
+    // Verify captured exact CWD and exact logical argv
+    let captured = fs::read_to_string(&capture_log).expect("read capture log");
+    let mut captured_cwd = None;
+    let mut captured_args = Vec::new();
+    for line in captured.lines() {
+        if let Some(rest) = line.strip_prefix("CWD=") {
+            captured_cwd = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("ARG=") {
+            captured_args.push(rest.to_string());
+        }
+    }
+
+    assert_eq!(
+        captured_cwd.as_deref(),
+        Some(project_dir.display().to_string().as_str()),
+        "CWD must match project_dir exactly"
     );
 
-    // 4. End-to-end SchedulerService tick execution
+    let expected_args = vec![
+        "exec".to_string(),
+        "resume".to_string(),
+        session_id.to_string(),
+        prompt.clone(),
+    ];
+    assert_eq!(
+        captured_args, expected_args,
+        "Logical argv must match expected arguments exactly without alteration"
+    );
+
+    // 5. End-to-end SchedulerService tick execution
     let store_path = temp_root.path().join("jobs.json");
     let store = JobStore::new_with_path(store_path);
     let service = SchedulerService::with_scheduler(
@@ -574,11 +684,14 @@ async fn test_windows_codex_process_launch_and_tick() {
             ProviderType::Codex,
             session_id.to_string(),
             project_dir.clone(),
-            Some(prompt.to_string()),
+            Some(prompt.clone()),
             due_time,
             None,
         )
         .expect("schedule job");
+
+    // Clear capture log before tick execution
+    fs::remove_file(&capture_log).ok();
 
     let tick_results = service.execute_tick().await.expect("execute tick");
     assert_eq!(tick_results.len(), 1);
@@ -590,10 +703,22 @@ async fn test_windows_codex_process_launch_and_tick() {
     assert_eq!(updated_job.execution_history.len(), 1);
     assert_eq!(updated_job.execution_history[0].exit_code, Some(0));
 
-    // Restore original PATH
-    unsafe {
-        std::env::set_var("PATH", original_path);
+    // Verify tick execution did not trigger injection and preserved exact argv
+    assert!(
+        !marker_file.exists(),
+        "Shell injection occurred during execute_tick! Sentinel file was created"
+    );
+    let tick_captured = fs::read_to_string(&capture_log).expect("read capture log after tick");
+    let mut tick_captured_args = Vec::new();
+    for line in tick_captured.lines() {
+        if let Some(rest) = line.strip_prefix("ARG=") {
+            tick_captured_args.push(rest.to_string());
+        }
     }
+    assert_eq!(
+        tick_captured_args, expected_args,
+        "execute_tick logical argv must match expected arguments exactly"
+    );
 }
 
 #[cfg(unix)]

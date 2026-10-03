@@ -149,7 +149,7 @@ pub fn resolve_windows_launcher(
     let mut search_dirs: Vec<PathBuf> = Vec::new();
 
     if let Some(path) = path_var {
-        for dir in split_windows_paths(path) {
+        for dir in std::env::split_paths(path) {
             if !search_dirs.contains(&dir) {
                 search_dirs.push(dir);
             }
@@ -256,31 +256,13 @@ pub fn augment_path_for_child() -> Option<OsString> {
     augment_path_unix_internal(std::env::var_os("PATH").as_deref(), &known)
 }
 
-pub fn split_windows_paths(path_str: &OsStr) -> Vec<PathBuf> {
-    path_str
-        .to_string_lossy()
-        .split(';')
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .collect()
-}
-
-pub fn join_windows_paths(paths: &[PathBuf]) -> OsString {
-    let mut joined = String::new();
-    for (i, p) in paths.iter().enumerate() {
-        if i > 0 {
-            joined.push(';');
-        }
-        joined.push_str(&p.to_string_lossy());
-    }
-    OsString::from(joined)
-}
-
 pub fn augment_path_windows_internal(
     base_path: Option<&OsStr>,
     known_dirs: &[PathBuf],
 ) -> Option<OsString> {
-    let mut paths: Vec<PathBuf> = base_path.map(split_windows_paths).unwrap_or_default();
+    let mut paths: Vec<PathBuf> = base_path
+        .map(|p| std::env::split_paths(p).collect())
+        .unwrap_or_default();
 
     for dir in known_dirs {
         if !paths.contains(dir) {
@@ -288,7 +270,7 @@ pub fn augment_path_windows_internal(
         }
     }
 
-    Some(join_windows_paths(&paths))
+    std::env::join_paths(paths).ok()
 }
 
 pub fn augment_path_unix_internal(
@@ -420,18 +402,26 @@ mod tests {
         assert_eq!(resolved, Some(binary));
     }
 
+    #[cfg(windows)]
     #[test]
     fn test_windows_path_augmentation() {
         let dir1 = PathBuf::from("C:\\Windows\\System32");
-        let dir2 = PathBuf::from("C:\\Users\\test\\AppData\\Roaming\\npm");
+        let dir2 = PathBuf::from("C:\\Users\\テスト\\AppData\\Roaming\\npm");
+        let dir3 = PathBuf::from("C:\\Users\\Test User\\AppData\\Roaming\\npm");
 
-        let path_os = join_windows_paths(std::slice::from_ref(&dir1));
-        let augmented = augment_path_windows_internal(Some(&path_os), std::slice::from_ref(&dir2))
-            .expect("augmented path");
+        let path_os = std::env::join_paths([&dir1, &dir2]).expect("join paths");
+        let augmented =
+            augment_path_windows_internal(Some(&path_os), &[dir2.clone(), dir3.clone()])
+                .expect("augmented path");
 
-        let split: Vec<PathBuf> = split_windows_paths(&augmented);
+        let split: Vec<PathBuf> = std::env::split_paths(&augmented).collect();
         assert!(split.contains(&dir1));
         assert!(split.contains(&dir2));
+        assert!(split.contains(&dir3));
+
+        // Deduplication: dir2 should appear only once
+        let dir2_count = split.iter().filter(|&p| p == &dir2).count();
+        assert_eq!(dir2_count, 1);
 
         // Must not contain macOS paths
         assert!(!split.contains(&PathBuf::from("/opt/homebrew/bin")));

@@ -58,30 +58,44 @@ jobs:
         shell: powershell
         run: |
           Write-Host "=== 1. Creating standard user 'standarduser' ==="
-          net user standarduser "StandardP@ss123!" /add /expires:never
+          $pass = ConvertTo-SecureString "StdPass1234!" -AsPlainText -Force
+          New-LocalUser -Name "standarduser" -Password $pass -PasswordNeverExpires -Description "Standard Test User"
           
-          $adminMembers = net localgroup Administrators
-          Write-Host "Administrators:"
-          $adminMembers
+          $adminMembers = Get-LocalGroupMember -Group "Administrators"
+          Write-Host "Administrators members:"
+          $adminMembers | ForEach-Object { $_.Name }
           
+          $userMembers = Get-LocalGroupMember -Group "Users"
+          Write-Host "Users members:"
+          $userMembers | ForEach-Object { $_.Name }
+
           Write-Host "=== 2. Granting directory access to standarduser ==="
           icacls target /grant "standarduser:(OI)(CI)RX" /T | Out-Null
           icacls . /grant "standarduser:(OI)(CI)RX" /T | Out-Null
 
           Write-Host "=== 3. Testing schtasks /Create as standarduser via ProcessStartInfo ==="
-          $secPassword = ConvertTo-SecureString "StandardP@ss123!" -AsPlainText -Force
+          $secPassword = ConvertTo-SecureString "StdPass1234!" -AsPlainText -Force
           
           # Test script to run as standard user
           $testScript = @"
-          Write-Host 'Current Identity:'
+          Write-Host '--- Current Identity ---'
           whoami
           whoami /groups
-          Write-Host 'Testing codex-scheduler install-scheduler:'
+          
+          Write-Host '--- Testing codex-scheduler install-scheduler ---'
           & '$PWD\target\debug\codex-scheduler.exe' install-scheduler
           Write-Host "install-scheduler exit code: `$LASTEXITCODE"
+          
+          Write-Host '--- Testing codex-scheduler status --json ---'
           & '$PWD\target\debug\codex-scheduler.exe' status --json
+          
+          Write-Host '--- Testing codex-scheduler uninstall-scheduler ---'
           & '$PWD\target\debug\codex-scheduler.exe' uninstall-scheduler
           Write-Host "uninstall-scheduler exit code: `$LASTEXITCODE"
+
+          Write-Host '--- Testing direct schtasks create without XML ---'
+          schtasks.exe /Create /TN "StandardTestTask" /TR "cmd.exe /c exit 0" /SC ONLOGON /F
+          Write-Host "direct schtasks create exit code: `$LASTEXITCODE"
           "@
           Set-Content -Path "$PWD\run_as_standard.ps1" -Value $testScript
 
@@ -109,4 +123,5 @@ jobs:
           } catch {
             Write-Host "Process start error: $_"
           }
+
 

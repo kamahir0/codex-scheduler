@@ -45,7 +45,7 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace
 
-      - name: CLI Task Scheduler smoke test
+      - name: CLI Task Scheduler smoke test (Administrator)
         shell: bash
         run: |
           cargo run -p codex-scheduler-cli -- status
@@ -53,3 +53,60 @@ jobs:
           cargo run -p codex-scheduler-cli -- status --json
           cargo run -p codex-scheduler-cli -- uninstall-scheduler
           cargo run -p codex-scheduler-cli -- status --json
+
+      - name: Standard User Task Scheduler Empirical Verification
+        shell: powershell
+        run: |
+          Write-Host "=== 1. Creating standard user 'standarduser' ==="
+          net user standarduser "StandardP@ss123!" /add /expires:never
+          
+          $adminMembers = net localgroup Administrators
+          Write-Host "Administrators:"
+          $adminMembers
+          
+          Write-Host "=== 2. Granting directory access to standarduser ==="
+          icacls target /grant "standarduser:(OI)(CI)RX" /T | Out-Null
+          icacls . /grant "standarduser:(OI)(CI)RX" /T | Out-Null
+
+          Write-Host "=== 3. Testing schtasks /Create as standarduser via ProcessStartInfo ==="
+          $secPassword = ConvertTo-SecureString "StandardP@ss123!" -AsPlainText -Force
+          
+          # Test script to run as standard user
+          $testScript = @"
+          Write-Host 'Current Identity:'
+          whoami
+          whoami /groups
+          Write-Host 'Testing codex-scheduler install-scheduler:'
+          & '$PWD\target\debug\codex-scheduler.exe' install-scheduler
+          Write-Host "install-scheduler exit code: `$LASTEXITCODE"
+          & '$PWD\target\debug\codex-scheduler.exe' status --json
+          & '$PWD\target\debug\codex-scheduler.exe' uninstall-scheduler
+          Write-Host "uninstall-scheduler exit code: `$LASTEXITCODE"
+          "@
+          Set-Content -Path "$PWD\run_as_standard.ps1" -Value $testScript
+
+          $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+          $pinfo.FileName = "powershell.exe"
+          $pinfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PWD\run_as_standard.ps1`""
+          $pinfo.UserName = "standarduser"
+          $pinfo.Password = $secPassword
+          $pinfo.UseShellExecute = $false
+          $pinfo.RedirectStandardOutput = $true
+          $pinfo.RedirectStandardError = $true
+          $pinfo.WorkingDirectory = "$PWD"
+
+          try {
+            $process = [System.Diagnostics.Process]::Start($pinfo)
+            $stdout = $process.StandardOutput.ReadToEnd()
+            $stderr = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            Write-Host "=== Standard User Execution Output ==="
+            Write-Host "ExitCode: $($process.ExitCode)"
+            Write-Host "STDOUT:"
+            Write-Host $stdout
+            Write-Host "STDERR:"
+            Write-Host $stderr
+          } catch {
+            Write-Host "Process start error: $_"
+          }
+

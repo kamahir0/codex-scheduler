@@ -427,7 +427,9 @@ dependencies = [
  "chrono",
  "clap",
  "codex-scheduler-core",
+ "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

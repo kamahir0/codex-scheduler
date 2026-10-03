@@ -9,7 +9,7 @@ description: Independently challenge a Draft/Proposed specification change and r
 
 refinementで作成されたproposalを、authoring assumptionsから離れたfresh challenge passとしてreviewする。
 
-Human gate criteriaは[Execution Workflow](../../docs/execution-workflow.md#human-gate)、autonomous approvalは[Specification Workflow](../../docs/contributing/specification-workflow.md#autonomous-approval)、documentation ownershipは[Documentation Policy](../../docs/contributing/documentation-policy.md)がownerである。このskillへcriteria本文を複製しない。
+Human gate criteriaは[Execution Workflow](../../../docs/execution-workflow.md#human-gate)、autonomous approvalは[Specification Workflow](../../../docs/contributing/specification-workflow.md#autonomous-approval)、documentation ownershipは[Documentation Policy](../../../docs/contributing/documentation-policy.md)がownerである。このskillへcriteria本文を複製しない。
 
 review-spec pass自身はstatus transitionを行わない。
 

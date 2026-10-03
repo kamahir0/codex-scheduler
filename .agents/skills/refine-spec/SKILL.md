@@ -9,7 +9,7 @@ description: Turn a request or Current Objective into a traceable Draft/Proposed
 
 product/domain/compatibility/user-visible GUI behaviorを変更するrequestを、review可能なDraft/Proposed changeへ変換する。
 
-Human gate、Agent Decision eligibility、autonomous approvalは[Specification Workflow](../../docs/contributing/specification-workflow.md)と[Execution Workflow](../../docs/execution-workflow.md#human-gate)がownerであり、このskillへcriteriaを複製しない。documentation retentionは[Documentation Policy](../../docs/contributing/documentation-policy.md)に従う。
+Human gate、Agent Decision eligibility、autonomous approvalは[Specification Workflow](../../../docs/contributing/specification-workflow.md)と[Execution Workflow](../../../docs/execution-workflow.md#human-gate)がownerであり、このskillへcriteriaを複製しない。documentation retentionは[Documentation Policy](../../../docs/contributing/documentation-policy.md)に従う。
 
 このskillはproduct implementationを行わず、authoring pass中に`Approved`へstatus transitionしない。
 

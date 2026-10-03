@@ -9,7 +9,7 @@ description: Implement and verify behavior from Approved specifications, maintai
 
 Approved specificationを実装し、self-reviewとrequired validationを終えたfinal candidateへ到達する。
 
-authority / Human gate / recovery / Git deliveryは`AGENTS.md`と[Execution Workflow](../../docs/execution-workflow.md)、documentation quantityは[Documentation Policy](../../docs/contributing/documentation-policy.md)がownerであり、このskillへ共通policyを複製しない。
+authority / Human gate / recovery / Git deliveryは`AGENTS.md`と[Execution Workflow](../../../docs/execution-workflow.md)、documentation quantityは[Documentation Policy](../../../docs/contributing/documentation-policy.md)がownerであり、このskillへ共通policyを複製しない。
 
 targetが`Approved`でなければproduct codeを変更しない。
 
@@ -46,7 +46,7 @@ Approved authorityからobservable behaviorを安全に決められない場合�
 
 ## Recovery checkpoints
 
-long-running workでは[Coherent implementation checkpoints](../../docs/execution-workflow.md#coherent-implementation-checkpoints)を使う。
+long-running workでは[Coherent implementation checkpoints](../../../docs/execution-workflow.md#coherent-implementation-checkpoints)を使う。
 
 meaningful sliceがfocused validationを通ったらcheckpoint commitを作ってよい。commit後、Development StateのActive workをCompleted / In progress / Remainingのwork package / Requirement IDだけで更新してよい。
 
@@ -54,7 +54,7 @@ meaningful sliceがfocused validationを通ったらcheckpoint commitを作っ�
 
 ## Local rationale
 
-non-obviousなworkaround、ordering/concurrency、platform-specific behavior、intentional redundancy、optimization、unusual filesystem/error handling等だけ、[Implementation Rationale](../../docs/contributing/implementation-rationale.md)に従ってnearby WHYを残す。
+non-obviousなworkaround、ordering/concurrency、platform-specific behavior、intentional redundancy、optimization、unusual filesystem/error handling等だけ、[Implementation Rationale](../../../docs/contributing/implementation-rationale.md)に従ってnearby WHYを残す。
 
 既存specやtestから理由を十分復元できるなら追加commentを書かない。rationale-sensitiveな変更では鮮度を再確認し、必要なら更新 / 削除する。
 

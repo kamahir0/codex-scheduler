@@ -66,13 +66,16 @@ one knowledge, one owner。入口文書、Current Objective、Development State�
 
 必要なactivityだけ読む。
 
-- specification refinement: [`skills/refine-spec/SKILL.md`](skills/refine-spec/SKILL.md)
-- specification review: [`skills/review-spec/SKILL.md`](skills/review-spec/SKILL.md)
-- Approved implementation: [`skills/implement-spec/SKILL.md`](skills/implement-spec/SKILL.md)
-- self-review / final verification: [`skills/review-code/SKILL.md`](skills/review-code/SKILL.md)
-- release automation: [`skills/release/SKILL.md`](skills/release/SKILL.md)
-- CLI operation / agent automation: [`skills/scheduler-cli/SKILL.md`](skills/scheduler-cli/SKILL.md)
+- specification refinement: [`.agents/skills/refine-spec/SKILL.md`](.agents/skills/refine-spec/SKILL.md)
+- specification review: [`.agents/skills/review-spec/SKILL.md`](.agents/skills/review-spec/SKILL.md)
+- Approved implementation: [`.agents/skills/implement-spec/SKILL.md`](.agents/skills/implement-spec/SKILL.md)
+- self-review / final verification: [`.agents/skills/review-code/SKILL.md`](.agents/skills/review-code/SKILL.md)
+- release automation: [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md)
 - implementation rationale: [`docs/contributing/implementation-rationale.md`](docs/contributing/implementation-rationale.md)
+
+製品利用者へ配布するAI skillはrepository開発用skillと分離し、`skills/`配下に置く。
+
+- CLI operation / agent automation (distribution): [`skills/scheduler-cli/SKILL.md`](skills/scheduler-cli/SKILL.md)
 
 ## Architecture anchors
 

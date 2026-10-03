@@ -101,7 +101,7 @@ export const JobTable: React.FC<JobTableProps> = ({
     {
       title: "セッション ID / プロバイダ",
       key: "session",
-      width: 220,
+      width: 240,
       render: (_, record) => {
         const providerName =
           typeof record.provider === "string"
@@ -113,16 +113,23 @@ export const JobTable: React.FC<JobTableProps> = ({
             : record.session_id;
 
         return (
-          <Space direction="vertical" size={2}>
-            <Space size={6}>
-              <Tag color="cyan" style={{ fontSize: 11, padding: "0 6px" }}>
-                {providerName}
-              </Tag>
-              <Text copyable={{ text: record.session_id }} style={{ fontSize: 13, fontFamily: "monospace" }}>
-                {shortId}
-              </Text>
-            </Space>
-          </Space>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+            <Tag color="cyan" style={{ fontSize: 11, padding: "0 6px", margin: 0, flexShrink: 0 }}>
+              {providerName}
+            </Tag>
+            <Text
+              copyable={{ text: record.session_id }}
+              style={{
+                fontSize: 13,
+                fontFamily: "monospace",
+                whiteSpace: "nowrap",
+                display: "inline-flex",
+                alignItems: "center",
+              }}
+            >
+              {shortId}
+            </Text>
+          </div>
         );
       },
     },
@@ -158,7 +165,7 @@ export const JobTable: React.FC<JobTableProps> = ({
       key: "scheduled_at",
       width: 200,
       sorter: (a, b) => dayjs(a.scheduled_at).valueOf() - dayjs(b.scheduled_at).valueOf(),
-      defaultSortOrder: "ascend",
+      defaultSortOrder: "descend",
       render: (scheduled_at: string) => {
         const target = dayjs(scheduled_at);
         const now = dayjs();
@@ -271,7 +278,7 @@ export const JobTable: React.FC<JobTableProps> = ({
       pagination={{ pageSize: 8, showSizeChanger: false }}
       className="job-table-wrapper"
       style={{ borderRadius: 8 }}
-      scroll={{ x: 1265 }}
+      scroll={{ x: 1285 }}
     />
   );
 };

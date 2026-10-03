@@ -22,6 +22,7 @@ import {
   Check,
 } from "lucide-react";
 import { Job, CreateJobPayload, SystemInfo } from "./types";
+import dayjs from "dayjs";
 import {
   listJobs,
   createJob,
@@ -85,6 +86,7 @@ export const App: React.FC = () => {
     if (!silent) setLoading(true);
     try {
       const data = await listJobs();
+      data.sort((a, b) => dayjs(b.scheduled_at).valueOf() - dayjs(a.scheduled_at).valueOf());
       setJobs(data);
     } catch (e: any) {
       if (!silent) message.error("ジョブ一覧の取得に失敗しました: " + e.message);

@@ -600,7 +600,7 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     use crate::os_scheduler::SchedulerOwner;

@@ -176,7 +176,11 @@ pub fn is_requirement_id(token: &str) -> bool {
     }
     // Must be uppercase ascii letters or digits, and at least first part should be alphabetic
     for part in &parts {
-        if part.is_empty() || !part.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+        if part.is_empty()
+            || !part
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        {
             return false;
         }
     }
@@ -284,7 +288,10 @@ pub fn validate_block(
 
 /// Determines if a file should be checked for implementation rationales.
 pub fn is_target_source_file(rel_path: &Path) -> bool {
-    let components: Vec<_> = rel_path.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
+    let components: Vec<_> = rel_path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
 
     let excluded_dirs = [
         "target",
@@ -329,7 +336,9 @@ pub fn collect_known_requirement_ids(root: &Path) -> HashSet<String> {
                     stack.push(path);
                 } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
                     if let Ok(content) = fs::read_to_string(&path) {
-                        for token in content.split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_') {
+                        for token in content
+                            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+                        {
                             let trimmed = token.trim_matches(|c: char| c == '-' || c == '_');
                             if is_requirement_id(trimmed) {
                                 req_ids.insert(trimmed.to_string());
@@ -452,9 +461,12 @@ mod tests {
     fn test_valid_rationale_block() {
         let content = concat!(
             "\n",
-            "/", "/ WHY: Single executable with 2 modes avoids Gatekeeper re-evaluation.\n",
-            "/", "/ WHAT BREAKS: Separating worker binary causes Gatekeeper rejection.\n",
-            "/", "/ EVIDENCE: docs/adr/0003-macos-single-executable-headless-scheduler.md, OS-SCHED-001\n",
+            "/",
+            "/ WHY: Single executable with 2 modes avoids Gatekeeper re-evaluation.\n",
+            "/",
+            "/ WHAT BREAKS: Separating worker binary causes Gatekeeper rejection.\n",
+            "/",
+            "/ EVIDENCE: docs/adr/0003-macos-single-executable-headless-scheduler.md, OS-SCHED-001\n",
             "fn dummy() {}\n"
         );
         let blocks = parse_rationale_blocks(content, "test.rs");
@@ -462,12 +474,19 @@ mod tests {
         let b = &blocks[0];
         assert_eq!(b.start_line, 2);
         assert!(b.why.as_ref().unwrap().contains("Single executable"));
-        assert!(b.what_breaks.as_ref().unwrap().contains("Separating worker"));
+        assert!(
+            b.what_breaks
+                .as_ref()
+                .unwrap()
+                .contains("Separating worker")
+        );
         assert!(b.evidence.as_ref().unwrap().contains("OS-SCHED-001"));
 
         // Setup mock root
         let temp_dir = tempfile::tempdir().unwrap();
-        let adr_path = temp_dir.path().join("docs/adr/0003-macos-single-executable-headless-scheduler.md");
+        let adr_path = temp_dir
+            .path()
+            .join("docs/adr/0003-macos-single-executable-headless-scheduler.md");
         fs::create_dir_all(adr_path.parent().unwrap()).unwrap();
         fs::write(&adr_path, "mock ADR").unwrap();
 
@@ -480,11 +499,7 @@ mod tests {
 
     #[test]
     fn test_missing_field_detection() {
-        let content = concat!(
-            "\n",
-            "/", "/ WHY: Some explanation\n",
-            "fn dummy() {}\n"
-        );
+        let content = concat!("\n", "/", "/ WHY: Some explanation\n", "fn dummy() {}\n");
         let blocks = parse_rationale_blocks(content, "test.rs");
         assert_eq!(blocks.len(), 1);
         let b = &blocks[0];
@@ -510,9 +525,12 @@ mod tests {
     fn test_empty_field_detection() {
         let content = concat!(
             "\n",
-            "/", "/ WHY: \n",
-            "/", "/ WHAT BREAKS: \n",
-            "/", "/ EVIDENCE: \n",
+            "/",
+            "/ WHY: \n",
+            "/",
+            "/ WHAT BREAKS: \n",
+            "/",
+            "/ EVIDENCE: \n",
             "fn dummy() {}\n"
         );
         let blocks = parse_rationale_blocks(content, "test.rs");
@@ -545,9 +563,12 @@ mod tests {
     fn test_missing_local_evidence_path() {
         let content = concat!(
             "\n",
-            "/", "/ WHY: Important performance optimization\n",
-            "/", "/ WHAT BREAKS: Severe latency spike\n",
-            "/", "/ EVIDENCE: docs/adr/9999-does-not-exist.md\n",
+            "/",
+            "/ WHY: Important performance optimization\n",
+            "/",
+            "/ WHAT BREAKS: Severe latency spike\n",
+            "/",
+            "/ EVIDENCE: docs/adr/9999-does-not-exist.md\n",
             "fn dummy() {}\n"
         );
         let blocks = parse_rationale_blocks(content, "test.rs");
@@ -572,9 +593,12 @@ mod tests {
     fn test_missing_requirement_id() {
         let content = concat!(
             "\n",
-            "/", "/ WHY: Necessary invariant\n",
-            "/", "/ WHAT BREAKS: Data corruption\n",
-            "/", "/ EVIDENCE: UNKNOWN-REQ-999\n",
+            "/",
+            "/ WHY: Necessary invariant\n",
+            "/",
+            "/ WHAT BREAKS: Data corruption\n",
+            "/",
+            "/ EVIDENCE: UNKNOWN-REQ-999\n",
             "fn dummy() {}\n"
         );
         let blocks = parse_rationale_blocks(content, "test.rs");
@@ -599,25 +623,38 @@ mod tests {
     #[test]
     fn test_excluded_path_handling() {
         assert!(!is_target_source_file(Path::new("target/debug/build.rs")));
-        assert!(!is_target_source_file(Path::new("node_modules/pkg/index.js")));
+        assert!(!is_target_source_file(Path::new(
+            "node_modules/pkg/index.js"
+        )));
         assert!(!is_target_source_file(Path::new("dist/assets/index.js")));
         assert!(!is_target_source_file(Path::new(".git/hooks/pre-commit")));
-        assert!(!is_target_source_file(Path::new("docs/contributing/implementation-rationale.md")));
+        assert!(!is_target_source_file(Path::new(
+            "docs/contributing/implementation-rationale.md"
+        )));
         assert!(!is_target_source_file(Path::new("Cargo.lock")));
         assert!(!is_target_source_file(Path::new("package.json")));
 
-        assert!(is_target_source_file(Path::new("crates/codex-scheduler-core/src/lib.rs")));
+        assert!(is_target_source_file(Path::new(
+            "crates/codex-scheduler-core/src/lib.rs"
+        )));
         assert!(is_target_source_file(Path::new("apps/gui/src/main.tsx")));
-        assert!(is_target_source_file(Path::new("apps/gui/src-tauri/src/main.rs")));
+        assert!(is_target_source_file(Path::new(
+            "apps/gui/src-tauri/src/main.rs"
+        )));
     }
 
     #[test]
     fn test_doc_comments_do_not_continue_rationale_block() {
         let content = concat!(
-            "/", "/ WHY: Needed for safety\n",
-            "/", "/ WHAT BREAKS: Invariant violation\n",
-            "/", "/ EVIDENCE: KNOWN-REQ-001\n",
-            "/", "/", "/ This is a doc comment that should not be swallowed into EVIDENCE.\n",
+            "/",
+            "/ WHY: Needed for safety\n",
+            "/",
+            "/ WHAT BREAKS: Invariant violation\n",
+            "/",
+            "/ EVIDENCE: KNOWN-REQ-001\n",
+            "/",
+            "/",
+            "/ This is a doc comment that should not be swallowed into EVIDENCE.\n",
             "pub fn safe_fn() {}\n"
         );
         let blocks = parse_rationale_blocks(content, "test.rs");

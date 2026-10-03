@@ -325,7 +325,8 @@ mod tests {
             None,
             past,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         job_due_scheduled.set_status(JobStatus::Scheduled);
 
         // 2. Due Retrying -> MUST claim (the bugfix)
@@ -336,7 +337,8 @@ mod tests {
             None,
             past,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         job_due_retrying.set_status(JobStatus::Retrying);
 
         // 3. Future Scheduled -> MUST NOT claim
@@ -347,7 +349,8 @@ mod tests {
             None,
             future,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         job_future_scheduled.set_status(JobStatus::Scheduled);
 
         // 4. Future Retrying -> MUST NOT claim
@@ -358,7 +361,8 @@ mod tests {
             None,
             future,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         job_future_retrying.set_status(JobStatus::Retrying);
 
         // 5. Due Running -> MUST NOT claim
@@ -369,7 +373,8 @@ mod tests {
             None,
             past,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         job_due_running.set_status(JobStatus::Running);
 
         // 6. Due Succeeded -> MUST NOT claim
@@ -380,7 +385,8 @@ mod tests {
             None,
             past,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         job_due_succeeded.set_status(JobStatus::Succeeded);
 
         // 7. Due Failed -> MUST NOT claim
@@ -391,7 +397,8 @@ mod tests {
             None,
             past,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         job_due_failed.set_status(JobStatus::Failed);
 
         // 8. Due Cancelled -> MUST NOT claim
@@ -402,7 +409,8 @@ mod tests {
             None,
             past,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         job_due_cancelled.set_status(JobStatus::Cancelled);
 
         // Insert all jobs
@@ -419,11 +427,25 @@ mod tests {
         let claimed = store.claim_due_jobs(now).unwrap();
 
         // Exactly 2 jobs must be claimed: job_due_scheduled and job_due_retrying
-        assert_eq!(claimed.len(), 2, "Expected exactly 2 claimed jobs, got: {:?}", claimed.iter().map(|j| (&j.id, &j.status)).collect::<Vec<_>>());
+        assert_eq!(
+            claimed.len(),
+            2,
+            "Expected exactly 2 claimed jobs, got: {:?}",
+            claimed
+                .iter()
+                .map(|j| (&j.id, &j.status))
+                .collect::<Vec<_>>()
+        );
 
         let claimed_ids: Vec<String> = claimed.iter().map(|j| j.id.clone()).collect();
-        assert!(claimed_ids.contains(&job_due_scheduled.id), "Due Scheduled job should be claimed");
-        assert!(claimed_ids.contains(&job_due_retrying.id), "Due Retrying job should be claimed");
+        assert!(
+            claimed_ids.contains(&job_due_scheduled.id),
+            "Due Scheduled job should be claimed"
+        );
+        assert!(
+            claimed_ids.contains(&job_due_retrying.id),
+            "Due Retrying job should be claimed"
+        );
 
         // Both must have been transitioned to Running
         for job in &claimed {
@@ -438,6 +460,10 @@ mod tests {
 
         // Second tick claim immediately after: MUST return 0 jobs (both now Running)
         let second_claim = store.claim_due_jobs(now).unwrap();
-        assert_eq!(second_claim.len(), 0, "Second claim must not re-claim newly running jobs");
+        assert_eq!(
+            second_claim.len(),
+            0,
+            "Second claim must not re-claim newly running jobs"
+        );
     }
 }

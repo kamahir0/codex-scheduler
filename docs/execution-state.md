@@ -1,12 +1,13 @@
 # Development State
 
-Stage: objective-complete
-Candidate: dd3a8aabcb27c9afd2f5daa37f8019816e15b695
-Work base: 67506cd4b38b6a867ea5400b225ef658f8646e51
+Stage: implementation-ready
+Candidate: none
+Work base: 1b3fd938aa99e2dfa9ffdc75f4692ab8a66a2349
 
 ## Active work
 
-None.
+- In progress: Implementation of platform-aware resolver and safe execution in CodexAdapter, reproduction tests, and Windows CI acceptance.
+- Remaining: Verification, documentation update, release dry-run preflight.
 
 ## Blocking findings
 

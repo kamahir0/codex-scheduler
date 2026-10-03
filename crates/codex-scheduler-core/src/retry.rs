@@ -77,7 +77,6 @@ mod tests {
     use super::*;
     use crate::models::{ExecutionAttempt, ProviderType, RetryPolicy};
 
-
     fn dummy_job() -> Job {
         Job::new(
             ProviderType::Codex,

@@ -2,36 +2,41 @@
 
 ## Objective
 
-**Windows persistent scheduler + Windows standalone CLI support + cross-platform single scheduler ownership**
+**Windows native Codex process launch hotfix for v0.5.1**
 
 ## Completion boundary
 
-- Windows Desktop / CLI background scheduling (Task Scheduler 2.0 COM API, non-admin standard user compatibility)
-- Single-owner cross-platform architecture (Desktop precedence, safe takeover, stale protection)
-- Four official release assets (macOS DMG + standalone CLI, Windows NSIS EXE + standalone CLI)
-- Released in `v0.5.0`
+- Platform-aware Codex CLI launcher resolution on Windows (supporting official npm `.cmd` shim, `.exe` native binaries, excluding extensionless POSIX shims).
+- Platform-correct PATH augmentation on Windows (using `;` separator, adding `%APPDATA%\npm`, `%USERPROFILE%\.local\bin`, `%USERPROFILE%\.cargo\bin`, avoiding Unix paths).
+- Safe `.cmd` launcher invocation without shell injection or argument corruption.
+- Preservation of working directory (`cwd`), including directories with spaces.
+- Clear error contract when Codex CLI is missing (`ExecutableNotFound`).
+- macOS launcher resolution regression prevention.
+- Windows CI acceptance test validating actual child process launch.
+- Documentation updates for Windows support boundary and troubleshooting.
+- Release patch dry-run confirming v0.5.0 -> v0.5.1 readiness (stopping at Human Release Gate).
 
 ## Canonical authority
 
-- OS Scheduler specification: [`docs/specs/os-scheduler.md`](specs/os-scheduler.md) (`OS-SCHED-001`, `OS-SCHED-002`, `OS-SCHED-005`, `OS-SCHED-006`)
-- CLI specification: [`docs/specs/cli.md`](specs/cli.md) (`CLI-CMD-001`, `CLI-CMD-004`)
-- Delivery specification: [`docs/specs/desktop-delivery.md`](specs/desktop-delivery.md) (`DELIVERY-BUNDLE-001`, `DELIVERY-BUNDLE-002`, `DELIVERY-CI-001`)
-- Architecture decision record: [`docs/adr/0004-independent-desktop-cli-single-scheduler-owner.md`](adr/0004-independent-desktop-cli-single-scheduler-owner.md)
-- GUI specifications: [`docs/gui/setup-and-diagnostics.md`](gui/setup-and-diagnostics.md)
+- Codex Provider Adapter specification: [`docs/specs/codex-adapter.md`](specs/codex-adapter.md) (`CODEX-RESUME-001`, `CODEX-RESUME-002`, `CODEX-RESUME-003`, `CODEX-RESUME-004`, `CODEX-RESUME-006`, `CODEX-RESUME-007`)
+- OS Scheduler specification: [`docs/specs/os-scheduler.md`](specs/os-scheduler.md)
+- CLI specification: [`docs/specs/cli.md`](specs/cli.md)
+- Delivery specification: [`docs/specs/desktop-delivery.md`](specs/desktop-delivery.md)
 
 ## Explicit non-scope
 
-- アプリ内自動更新（In-app updater / Tauri updater）。
-- CLI 自己更新（CLI self-update）。
-- Apple Developer ID / 公証（Notarization）。
-- Windows コード署名証明書の購入。
-- Windows Service / 常駐バックグラウンドプロセスの新設。
-- ジョブごとの個別 Scheduled Task（単一タスク `CodexScheduler_Service` 不変条件を厳守）。
-- リモートスケジューラ連携。
-- `jobs.json` の破壊的スキーマ変更。
-- ポーリング間隔（60秒）の変更。
-- 新規 Provider アダプタの追加。
+- WSL内にしか存在しないCodex CLIの呼び出し（`wsl.exe` 経由の起動、WSLパス変換、WSL側HOME/auth/sessionDB連携）。
+- Cygwin専用Codex。
+- リモートLinux実行 / SSH execution backend。
+- 新規Providerアダプタの追加。
+- スケジューラ所有権（ownership）モデルの変更。
+- Task Scheduler アーキテクチャの変更。
+- `jobs.json` のスキーマ変更。
+- リトライポリシー（RetryEngine）の変更（os error 193 等のプロセス起動エラーをQuota枯渇エラーと混同しない）。
+- GUI機能追加 / CLIコマンド追加。
+- パッケージマネージャ対応、自動更新（updater）。
+- コード署名・公証。
 
 ## Status
 
-Completed / released in v0.5.0.
+In progress (v0.5.1 hotfix candidate).

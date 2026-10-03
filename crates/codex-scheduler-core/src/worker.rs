@@ -41,7 +41,12 @@ pub fn canonical_worker_dir() -> PathBuf {
     #[cfg(not(target_os = "windows"))]
     {
         dirs::home_dir()
-            .map(|h| h.join(".local").join("share").join("codex-scheduler").join("bin"))
+            .map(|h| {
+                h.join(".local")
+                    .join("share")
+                    .join("codex-scheduler")
+                    .join("bin")
+            })
             .unwrap_or_else(|| PathBuf::from("/tmp/codex-scheduler/bin"))
     }
 }
@@ -159,8 +164,12 @@ pub fn ensure_worker_installed() -> Result<PathBuf, WorkerError> {
                 let should_update = match (fs::metadata(src), fs::metadata(&canonical)) {
                     (Ok(src_meta), Ok(dst_meta)) => {
                         src_meta.len() != dst_meta.len()
-                            || src_meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-                                > dst_meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                            || src_meta
+                                .modified()
+                                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                                > dst_meta
+                                    .modified()
+                                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
                     }
                     _ => false,
                 };

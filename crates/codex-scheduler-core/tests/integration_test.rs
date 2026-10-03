@@ -1,12 +1,15 @@
 use chrono::Utc;
+use codex_scheduler_core::SchedulerService;
 use codex_scheduler_core::models::{JobStatus, ProviderType, RetryPolicy};
 use codex_scheduler_core::store::JobStore;
-use codex_scheduler_core::SchedulerService;
 use std::path::PathBuf;
 
 struct ReadyMockScheduler;
 impl codex_scheduler_core::os_scheduler::SchedulerBackend for ReadyMockScheduler {
-    fn ensure_scheduler_installed(&self, _path: &std::path::Path) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
+    fn ensure_scheduler_installed(
+        &self,
+        _path: &std::path::Path,
+    ) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
         Ok(())
     }
     fn is_scheduler_installed(&self) -> bool {
@@ -18,13 +21,22 @@ impl codex_scheduler_core::os_scheduler::SchedulerBackend for ReadyMockScheduler
     fn is_scheduler_path_matched(&self, _path: &std::path::Path) -> bool {
         true
     }
-    fn uninstall_scheduler(&self) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
+    fn uninstall_scheduler(
+        &self,
+    ) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
         Ok(())
     }
-    fn register_job(&self, _job: &codex_scheduler_core::models::Job, _path: &std::path::Path) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
+    fn register_job(
+        &self,
+        _job: &codex_scheduler_core::models::Job,
+        _path: &std::path::Path,
+    ) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
         Ok(())
     }
-    fn unregister_job(&self, _job_id: &str) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
+    fn unregister_job(
+        &self,
+        _job_id: &str,
+    ) -> Result<(), codex_scheduler_core::os_scheduler::SchedulerError> {
         Ok(())
     }
 }
@@ -64,7 +76,10 @@ async fn test_full_scheduler_workflow() {
     assert_eq!(job.prompt, "continue");
 
     // 2. Query job from store
-    let retrieved = store.get_job(&job.id).unwrap().expect("Job should be in store");
+    let retrieved = store
+        .get_job(&job.id)
+        .unwrap()
+        .expect("Job should be in store");
     assert_eq!(retrieved.id, job.id);
 
     // 3. Cancel job
@@ -209,11 +224,11 @@ async fn test_execute_tick_shared_semantics_updates_history() {
 
 #[tokio::test]
 async fn test_cli_service_guards_against_launchagent_registration() {
-    use codex_scheduler_core::os_scheduler::{SchedulerBackend, SchedulerError};
     use codex_scheduler_core::models::Job;
+    use codex_scheduler_core::os_scheduler::{SchedulerBackend, SchedulerError};
     use std::path::Path;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct MockScheduler {
         installed: Arc<AtomicBool>,
@@ -269,7 +284,10 @@ async fn test_cli_service_guards_against_launchagent_registration() {
         let ensure_err = cli_service.ensure_scheduler().unwrap_err();
         match ensure_err {
             codex_scheduler_core::CoreError::Scheduler(SchedulerError::ExecutableNotFound(_)) => {}
-            _ => panic!("Expected ExecutableNotFound when exe_path is None, got {:?}", ensure_err),
+            _ => panic!(
+                "Expected ExecutableNotFound when exe_path is None, got {:?}",
+                ensure_err
+            ),
         }
 
         // Case 2: If scheduler is NOT ready and exe_path is None, schedule_job fails because it cannot auto-ensure
@@ -334,12 +352,24 @@ async fn test_cli_service_guards_against_launchagent_registration() {
             fn ensure_scheduler_installed(&self, _path: &Path) -> Result<(), SchedulerError> {
                 Ok(()) // returns Ok without making ready true (simulating unready state)
             }
-            fn is_scheduler_installed(&self) -> bool { true }
-            fn is_scheduler_ready(&self) -> bool { false }
-            fn is_scheduler_path_matched(&self, _path: &Path) -> bool { true }
-            fn uninstall_scheduler(&self) -> Result<(), SchedulerError> { Ok(()) }
-            fn register_job(&self, _job: &Job, _path: &Path) -> Result<(), SchedulerError> { Ok(()) }
-            fn unregister_job(&self, _job_id: &str) -> Result<(), SchedulerError> { Ok(()) }
+            fn is_scheduler_installed(&self) -> bool {
+                true
+            }
+            fn is_scheduler_ready(&self) -> bool {
+                false
+            }
+            fn is_scheduler_path_matched(&self, _path: &Path) -> bool {
+                true
+            }
+            fn uninstall_scheduler(&self) -> Result<(), SchedulerError> {
+                Ok(())
+            }
+            fn register_job(&self, _job: &Job, _path: &Path) -> Result<(), SchedulerError> {
+                Ok(())
+            }
+            fn unregister_job(&self, _job_id: &str) -> Result<(), SchedulerError> {
+                Ok(())
+            }
         }
         let failing_service = SchedulerService::with_scheduler(
             store.clone(),
@@ -355,9 +385,15 @@ async fn test_cli_service_guards_against_launchagent_registration() {
             Utc::now() + chrono::Duration::hours(1),
             None,
         );
-        assert!(fail_res.is_err(), "schedule_job must fail when scheduler is not ready after ensure");
+        assert!(
+            fail_res.is_err(),
+            "schedule_job must fail when scheduler is not ready after ensure"
+        );
         let jobs_after = store.load_all().unwrap().len();
-        assert_eq!(jobs_before, jobs_after, "JobStore must not retain new job when scheduler is unready");
+        assert_eq!(
+            jobs_before, jobs_after,
+            "JobStore must not retain new job when scheduler is unready"
+        );
     }
 }
 
@@ -420,12 +456,20 @@ async fn test_retry_quota_backoff_and_subsequent_due_claim_lifecycle() {
     // 3. Before due time: tick should NOT claim the Retrying job
     let before_due = next_retry_at - chrono::Duration::seconds(10);
     let early_claims = store.claim_due_jobs(before_due).unwrap();
-    assert_eq!(early_claims.len(), 0, "Future retrying job must not be claimed prematurely");
+    assert_eq!(
+        early_claims.len(),
+        0,
+        "Future retrying job must not be claimed prematurely"
+    );
 
     // 4. At / after due time: next tick MUST claim the Retrying job and transition to Running
     let after_due = next_retry_at + chrono::Duration::seconds(5);
     let due_claims = store.claim_due_jobs(after_due).unwrap();
-    assert_eq!(due_claims.len(), 1, "Due retrying job must be claimed for re-execution");
+    assert_eq!(
+        due_claims.len(),
+        1,
+        "Due retrying job must be claimed for re-execution"
+    );
     assert_eq!(due_claims[0].id, job.id);
     assert_eq!(due_claims[0].status, JobStatus::Running);
 
@@ -434,8 +478,216 @@ async fn test_retry_quota_backoff_and_subsequent_due_claim_lifecycle() {
 
     // 5. Subsequent immediate tick: must return 0 jobs (preventing duplicate execution)
     let duplicate_claims = store.claim_due_jobs(after_due).unwrap();
-    assert_eq!(duplicate_claims.len(), 0, "Claimed running job must not be claimed again");
+    assert_eq!(
+        duplicate_claims.len(),
+        0,
+        "Claimed running job must not be claimed again"
+    );
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn test_windows_codex_process_launch_and_tick() {
+    use std::fs::{self, File};
+    use std::io::Write;
 
+    let temp_root = tempfile::tempdir().expect("create temp root");
+    let npm_bin = temp_root.path().join("npm");
+    fs::create_dir_all(&npm_bin).expect("create npm bin dir");
 
+    // 1. Create extensionless POSIX shim (would fail with os error 193 if executed)
+    let posix_shim = npm_bin.join("codex");
+    let mut f1 = File::create(&posix_shim).expect("create posix shim");
+    writeln!(f1, "#!/bin/sh\necho 'ERROR: POSIX SHIM EXECUTED'\nexit 193")
+        .expect("write posix shim");
+
+    // 2. Create valid Windows .cmd launcher
+    let cmd_launcher = npm_bin.join("codex.cmd");
+    let mut f2 = File::create(&cmd_launcher).expect("create cmd launcher");
+    writeln!(f2, "@echo off\necho CWD=%CD%\necho ARGV=%*\nexit /b 0").expect("write cmd launcher");
+
+    // Prepend npm_bin to PATH
+    let original_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_paths = vec![npm_bin.clone()];
+    new_paths.extend(std::env::split_paths(&original_path));
+    let joined_path = std::env::join_paths(new_paths).expect("join paths");
+    unsafe {
+        std::env::set_var("PATH", joined_path);
+    }
+
+    // Verify adapter resolves codex.cmd and ignores extensionless codex
+    let adapter = codex_scheduler_core::adapter::codex::CodexAdapter::new();
+    let resolved = adapter.resolve_executable().expect("resolve executable");
+    assert_eq!(
+        resolved, cmd_launcher,
+        "Adapter must resolve codex.cmd on Windows"
+    );
+
+    // 3. Test execute_resume with spaces in cwd and shell metacharacters in prompt
+    let project_dir = temp_root.path().join("My Test Project With Spaces");
+    fs::create_dir_all(&project_dir).expect("create project dir");
+
+    let session_id = "sess-win-test-999";
+    let prompt = "fix & test | ping ^ <file> > /dev/null %PATH% !VAR! \"double quoted\"";
+
+    let result = adapter
+        .execute_resume(session_id, &project_dir, prompt)
+        .await
+        .expect("execute_resume must succeed");
+
+    assert!(
+        result.success,
+        "Process execution must succeed: {:?}",
+        result
+    );
+    assert_eq!(result.exit_code, Some(0));
+    assert!(!result.is_quota_error);
+
+    // Verify cwd is preserved
+    assert!(
+        result
+            .stdout
+            .contains(&format!("CWD={}", project_dir.display())),
+        "stdout should reflect project cwd: {}",
+        result.stdout
+    );
+
+    // Verify arguments are preserved
+    assert!(
+        result.stdout.contains("ARGV=exec resume sess-win-test-999"),
+        "stdout should contain command args: {}",
+        result.stdout
+    );
+
+    // 4. End-to-end SchedulerService tick execution
+    let store_path = temp_root.path().join("jobs.json");
+    let store = JobStore::new_with_path(store_path);
+    let service = SchedulerService::with_scheduler(
+        store.clone(),
+        Some(PathBuf::from("codex-scheduler.exe")),
+        Box::new(ReadyMockScheduler),
+    );
+
+    let due_time = Utc::now() - chrono::Duration::minutes(5);
+    let job = service
+        .schedule_job(
+            ProviderType::Codex,
+            session_id.to_string(),
+            project_dir.clone(),
+            Some(prompt.to_string()),
+            due_time,
+            None,
+        )
+        .expect("schedule job");
+
+    let tick_results = service.execute_tick().await.expect("execute tick");
+    assert_eq!(tick_results.len(), 1);
+    assert_eq!(tick_results[0].status, JobStatus::Succeeded);
+    assert_eq!(tick_results[0].id, job.id);
+
+    let updated_job = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(updated_job.status, JobStatus::Succeeded);
+    assert_eq!(updated_job.execution_history.len(), 1);
+    assert_eq!(updated_job.execution_history[0].exit_code, Some(0));
+
+    // Restore original PATH
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_unix_codex_process_launch_and_tick() {
+    use std::fs::{self, File, Permissions};
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_root = tempfile::tempdir().expect("create temp root");
+    let bin_dir = temp_root.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+
+    // Create executable mock codex script
+    let mock_codex = bin_dir.join("codex");
+    let mut f = File::create(&mock_codex).expect("create mock codex");
+    writeln!(
+        f,
+        "#!/bin/sh\necho \"CWD=$(pwd)\"\necho \"ARGV=$*\"\nexit 0"
+    )
+    .expect("write mock codex");
+    fs::set_permissions(&mock_codex, Permissions::from_mode(0o755)).expect("set executable");
+
+    // Prepend bin_dir to PATH
+    let original_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_paths = vec![bin_dir.clone()];
+    new_paths.extend(std::env::split_paths(&original_path));
+    let joined_path = std::env::join_paths(new_paths).expect("join paths");
+    unsafe {
+        std::env::set_var("PATH", joined_path);
+    }
+
+    let adapter = codex_scheduler_core::adapter::codex::CodexAdapter::new();
+    let resolved = adapter.resolve_executable().expect("resolve executable");
+    assert_eq!(resolved, mock_codex);
+
+    let project_dir = temp_root.path().join("Unix Project With Spaces");
+    fs::create_dir_all(&project_dir).expect("create project dir");
+
+    let canonical_project_dir = fs::canonicalize(&project_dir).expect("canonicalize project dir");
+
+    let session_id = "sess-unix-test-001";
+    let prompt = "continue with & special chars";
+
+    let result = adapter
+        .execute_resume(session_id, &project_dir, prompt)
+        .await
+        .expect("execute_resume");
+
+    assert!(result.success);
+    assert_eq!(result.exit_code, Some(0));
+    assert!(
+        result
+            .stdout
+            .contains(&format!("CWD={}", canonical_project_dir.display()))
+    );
+    assert!(
+        result
+            .stdout
+            .contains("ARGV=exec resume sess-unix-test-001 continue with & special chars")
+    );
+
+    // End-to-end tick execution
+    let store_path = temp_root.path().join("jobs.json");
+    let store = JobStore::new_with_path(store_path);
+    let service = SchedulerService::with_scheduler(
+        store.clone(),
+        Some(PathBuf::from("codex-scheduler")),
+        Box::new(ReadyMockScheduler),
+    );
+
+    let due_time = Utc::now() - chrono::Duration::minutes(5);
+    let job = service
+        .schedule_job(
+            ProviderType::Codex,
+            session_id.to_string(),
+            project_dir.clone(),
+            Some(prompt.to_string()),
+            due_time,
+            None,
+        )
+        .expect("schedule job");
+
+    let tick_results = service.execute_tick().await.expect("execute tick");
+    assert_eq!(tick_results.len(), 1);
+    assert_eq!(tick_results[0].status, JobStatus::Succeeded);
+
+    let updated_job = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(updated_job.status, JobStatus::Succeeded);
+    assert_eq!(updated_job.execution_history.len(), 1);
+    assert_eq!(updated_job.execution_history[0].exit_code, Some(0));
+
+    // Restore original PATH
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+}

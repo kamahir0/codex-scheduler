@@ -166,7 +166,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cli.scheduler_tick {
         let executed = service.execute_tick().await?;
         if !executed.is_empty() {
-            println!("[Tick] Completed execution for {} due job(s).", executed.len());
+            println!(
+                "[Tick] Completed execution for {} due job(s).",
+                executed.len()
+            );
         }
         return Ok(());
     }
@@ -183,11 +186,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::RunJob { job_id } => {
             println!("[Worker] Starting execution for job: {}", job_id);
             let job = service.execute_job(&job_id).await?;
-            println!("[Worker] Job execution finished. Final status: {:?}", job.status);
+            println!(
+                "[Worker] Job execution finished. Final status: {:?}",
+                job.status
+            );
             if let Some(last) = job.execution_history.last() {
                 println!("[Worker] Exit code: {:?}", last.exit_code);
                 if last.is_quota_error {
-                    println!("[Worker] Quota error detected. Next retry: {:?}", job.scheduled_at);
+                    println!(
+                        "[Worker] Quota error detected. Next retry: {:?}",
+                        job.scheduled_at
+                    );
                 }
             }
         }
@@ -233,112 +242,130 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Session ID:   {}", job.session_id);
                 println!("  Working dir:  {}", job.cwd.display());
                 println!("  Prompt:       {}", job.prompt);
-                println!("  Scheduled at: {} ({})", job.scheduled_at, relative_time(job.scheduled_at));
+                println!(
+                    "  Scheduled at: {} ({})",
+                    job.scheduled_at,
+                    relative_time(job.scheduled_at)
+                );
             }
         }
-        Commands::List { json } => {
-            match service.store().load_all() {
-                Ok(jobs) => {
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&jobs)?);
-                    } else if jobs.is_empty() {
-                        println!("No jobs found. Use 'schedule' to add a new job.");
-                    } else {
-                        println!("{:<36} {:<10} {:<16} {:<20} {:<10}", "JOB ID", "STATUS", "SESSION", "SCHEDULED AT", "ATTEMPTS");
-                        println!("{}", "-".repeat(96));
-                        for j in jobs {
-                            let attempts = format!("{}/{}", j.execution_history.len(), j.retry_policy.max_attempts);
-                            let session_short = if j.session_id.len() > 14 {
-                                format!("{}...", &j.session_id[..12])
-                            } else {
-                                j.session_id.clone()
-                            };
-                            println!(
-                                "{:<36} {:<10?} {:<16} {:<20} {:<10}",
-                                j.id,
-                                j.status,
-                                session_short,
-                                j.scheduled_at.format("%Y-%m-%d %H:%M"),
-                                attempts
-                            );
+        Commands::List { json } => match service.store().load_all() {
+            Ok(jobs) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&jobs)?);
+                } else if jobs.is_empty() {
+                    println!("No jobs found. Use 'schedule' to add a new job.");
+                } else {
+                    println!(
+                        "{:<36} {:<10} {:<16} {:<20} {:<10}",
+                        "JOB ID", "STATUS", "SESSION", "SCHEDULED AT", "ATTEMPTS"
+                    );
+                    println!("{}", "-".repeat(96));
+                    for j in jobs {
+                        let attempts = format!(
+                            "{}/{}",
+                            j.execution_history.len(),
+                            j.retry_policy.max_attempts
+                        );
+                        let session_short = if j.session_id.len() > 14 {
+                            format!("{}...", &j.session_id[..12])
+                        } else {
+                            j.session_id.clone()
+                        };
+                        println!(
+                            "{:<36} {:<10?} {:<16} {:<20} {:<10}",
+                            j.id,
+                            j.status,
+                            session_short,
+                            j.scheduled_at.format("%Y-%m-%d %H:%M"),
+                            attempts
+                        );
+                    }
+                }
+            }
+            Err(e) => print_error_and_exit("store_error", &e.to_string(), json),
+        },
+        Commands::Show { job_id, json } => match service.store().get_job(&job_id) {
+            Ok(Some(job)) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&job)?);
+                } else {
+                    println!("Job Details:");
+                    println!("  ID:           {}", job.id);
+                    println!("  Provider:     {:?}", job.provider);
+                    println!("  Session ID:   {}", job.session_id);
+                    println!("  Working dir:  {}", job.cwd.display());
+                    println!("  Prompt:       {}", job.prompt);
+                    println!("  Status:       {:?}", job.status);
+                    println!("  Scheduled at: {}", job.scheduled_at);
+                    println!("  Created at:   {}", job.created_at);
+                    println!("  Updated at:   {}", job.updated_at);
+                    println!("  History:      {} attempts", job.execution_history.len());
+                    for (i, att) in job.execution_history.iter().enumerate() {
+                        println!("\n  --- Attempt #{} ---", i + 1);
+                        println!("    Started:        {}", att.started_at);
+                        println!("    Finished:       {}", att.finished_at);
+                        println!("    Exit Code:      {:?}", att.exit_code);
+                        println!("    Quota Error:    {}", att.is_quota_error);
+                        if let Some(ref err) = att.error_message {
+                            println!("    Error Message:  {}", err);
+                        }
+                        if !att.stdout.trim().is_empty() {
+                            println!("    Stdout:         {}", att.stdout.trim());
+                        }
+                        if !att.stderr.trim().is_empty() {
+                            println!("    Stderr:         {}", att.stderr.trim());
                         }
                     }
                 }
-                Err(e) => print_error_and_exit("store_error", &e.to_string(), json),
             }
-        }
-        Commands::Show { job_id, json } => {
-            match service.store().get_job(&job_id) {
-                Ok(Some(job)) => {
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&job)?);
-                    } else {
-                        println!("Job Details:");
-                        println!("  ID:           {}", job.id);
-                        println!("  Provider:     {:?}", job.provider);
-                        println!("  Session ID:   {}", job.session_id);
-                        println!("  Working dir:  {}", job.cwd.display());
-                        println!("  Prompt:       {}", job.prompt);
-                        println!("  Status:       {:?}", job.status);
-                        println!("  Scheduled at: {}", job.scheduled_at);
-                        println!("  Created at:   {}", job.created_at);
-                        println!("  Updated at:   {}", job.updated_at);
-                        println!("  History:      {} attempts", job.execution_history.len());
-                        for (i, att) in job.execution_history.iter().enumerate() {
-                            println!("\n  --- Attempt #{} ---", i + 1);
-                            println!("    Started:        {}", att.started_at);
-                            println!("    Finished:       {}", att.finished_at);
-                            println!("    Exit Code:      {:?}", att.exit_code);
-                            println!("    Quota Error:    {}", att.is_quota_error);
-                            if let Some(ref err) = att.error_message {
-                                println!("    Error Message:  {}", err);
-                            }
-                            if !att.stdout.trim().is_empty() {
-                                println!("    Stdout:         {}", att.stdout.trim());
-                            }
-                            if !att.stderr.trim().is_empty() {
-                                println!("    Stderr:         {}", att.stderr.trim());
-                            }
-                        }
-                    }
+            Ok(None) => print_error_and_exit(
+                "job_not_found",
+                &format!("Job '{}' not found", job_id),
+                json,
+            ),
+            Err(e) => print_error_and_exit("store_error", &e.to_string(), json),
+        },
+        Commands::Cancel { job_id, json } => match service.cancel_job(&job_id) {
+            Ok(job) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&job)?);
+                } else {
+                    println!("Job {} has been cancelled.", job.id);
                 }
-                Ok(None) => print_error_and_exit("job_not_found", &format!("Job '{}' not found", job_id), json),
-                Err(e) => print_error_and_exit("store_error", &e.to_string(), json),
             }
-        }
-        Commands::Cancel { job_id, json } => {
-            match service.cancel_job(&job_id) {
-                Ok(job) => {
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&job)?);
-                    } else {
-                        println!("Job {} has been cancelled.", job.id);
-                    }
-                }
-                Err(CoreError::JobNotFound(_)) => {
-                    print_error_and_exit("job_not_found", &format!("Job '{}' not found", job_id), json);
-                }
-                Err(e) => print_error_and_exit("cancel_failed", &e.to_string(), json),
+            Err(CoreError::JobNotFound(_)) => {
+                print_error_and_exit(
+                    "job_not_found",
+                    &format!("Job '{}' not found", job_id),
+                    json,
+                );
             }
-        }
-        Commands::Delete { job_id, json } => {
-            match service.delete_job(&job_id) {
-                Ok(true) => {
-                    if json {
-                        println!("{}", serde_json::json!({
+            Err(e) => print_error_and_exit("cancel_failed", &e.to_string(), json),
+        },
+        Commands::Delete { job_id, json } => match service.delete_job(&job_id) {
+            Ok(true) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
                             "deleted": true,
                             "job_id": job_id
-                        }));
-                    } else {
-                        println!("Job {} has been deleted.", job_id);
-                    }
+                        })
+                    );
+                } else {
+                    println!("Job {} has been deleted.", job_id);
                 }
-                Ok(false) => {
-                    print_error_and_exit("job_not_found", &format!("Job '{}' was not found.", job_id), json);
-                }
-                Err(e) => print_error_and_exit("delete_failed", &e.to_string(), json),
             }
-        }
+            Ok(false) => {
+                print_error_and_exit(
+                    "job_not_found",
+                    &format!("Job '{}' was not found.", job_id),
+                    json,
+                );
+            }
+            Err(e) => print_error_and_exit("delete_failed", &e.to_string(), json),
+        },
         Commands::Status { json } => {
             let output = StatusOutput {
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -347,7 +374,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     installed: service.is_scheduler_installed(),
                     ready: service.is_scheduler_ready(),
                     owner: service.get_scheduler_owner(),
-                    executable: service.get_scheduler_executable_path().map(|p| p.display().to_string()),
+                    executable: service
+                        .get_scheduler_executable_path()
+                        .map(|p| p.display().to_string()),
                     path_matched: service.is_scheduler_path_matched(),
                     target_exists: service.is_target_executable_exists(),
                     owner_target_valid: service.is_owner_target_valid(),
@@ -370,7 +399,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!("  Path Matched:      {}", output.scheduler.path_matched);
                 println!("  Target Exists:     {}", output.scheduler.target_exists);
-                println!("  Owner Target Valid:{}", output.scheduler.owner_target_valid);
+                println!(
+                    "  Owner Target Valid:{}",
+                    output.scheduler.owner_target_valid
+                );
             }
         }
         Commands::Tick { json } => {
@@ -378,7 +410,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&executed)?);
             } else if !executed.is_empty() {
-                println!("[Tick] Completed execution for {} due job(s).", executed.len());
+                println!(
+                    "[Tick] Completed execution for {} due job(s).",
+                    executed.len()
+                );
             }
         }
         Commands::InstallScheduler { json } => {
@@ -386,26 +421,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if owner == SchedulerOwner::Desktop {
                 if service.is_scheduler_ready() {
                     if json {
-                        println!("{}", serde_json::json!({
-                            "status": "retained",
-                            "owner": "desktop",
-                            "message": "Desktop-owned scheduler is already active. Retaining Desktop ownership."
-                        }));
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "status": "retained",
+                                "owner": "desktop",
+                                "message": "Desktop-owned scheduler is already active. Retaining Desktop ownership."
+                            })
+                        );
                     } else {
-                        println!("Notice: Desktop-owned scheduler is already active. Retaining Desktop ownership.");
+                        println!(
+                            "Notice: Desktop-owned scheduler is already active. Retaining Desktop ownership."
+                        );
                     }
                 } else {
                     // State B: Desktop-owned LaunchAgent exists but is not ready. Attempt safe repair.
                     match service.ensure_scheduler() {
                         Ok(()) if service.is_scheduler_ready() => {
                             if json {
-                                println!("{}", serde_json::json!({
-                                    "status": "repaired",
-                                    "owner": "desktop",
-                                    "message": "Desktop-owned scheduler was not loaded, but has been safely repaired and is now active."
-                                }));
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "status": "repaired",
+                                        "owner": "desktop",
+                                        "message": "Desktop-owned scheduler was not loaded, but has been safely repaired and is now active."
+                                    })
+                                );
                             } else {
-                                println!("Notice: Desktop-owned scheduler was not loaded, but has been safely repaired and is now active.");
+                                println!(
+                                    "Notice: Desktop-owned scheduler was not loaded, but has been safely repaired and is now active."
+                                );
                             }
                         }
                         Ok(()) => {
@@ -425,16 +470,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(()) => {
                         let new_owner = service.get_scheduler_owner();
                         if json {
-                            println!("{}", serde_json::json!({
-                                "status": "installed",
-                                "owner": new_owner,
-                                "message": "Persistent OS scheduler service installed and active."
-                            }));
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "status": "installed",
+                                    "owner": new_owner,
+                                    "message": "Persistent OS scheduler service installed and active."
+                                })
+                            );
                         } else {
-                            println!("Persistent OS scheduler service installed and active ({}).", new_owner);
+                            println!(
+                                "Persistent OS scheduler service installed and active ({}).",
+                                new_owner
+                            );
                         }
                     }
-                    Err(e) => print_error_and_exit("install_scheduler_failed", &e.to_string(), json),
+                    Err(e) => {
+                        print_error_and_exit("install_scheduler_failed", &e.to_string(), json)
+                    }
                 }
             }
         }
@@ -442,10 +495,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match service.scheduler().uninstall_scheduler_as_cli() {
                 Ok(()) => {
                     if json {
-                        println!("{}", serde_json::json!({
-                            "uninstalled": true,
-                            "message": "Persistent OS scheduler service uninstalled."
-                        }));
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "uninstalled": true,
+                                "message": "Persistent OS scheduler service uninstalled."
+                            })
+                        );
                     } else {
                         println!("Persistent OS scheduler service uninstalled.");
                     }
@@ -479,12 +535,20 @@ fn parse_time_arg(at: &str) -> Result<DateTime<Utc>, Box<dyn std::error::Error>>
 
     // Try local format YYYY-MM-DD HH:MM
     if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M") {
-        if let Some(local_dt) = chrono::Local::now().timezone().from_local_datetime(&naive).single() {
+        if let Some(local_dt) = chrono::Local::now()
+            .timezone()
+            .from_local_datetime(&naive)
+            .single()
+        {
             return Ok(local_dt.with_timezone(&Utc));
         }
     }
 
-    Err(format!("Unable to parse schedule time '{}'. Use ISO 8601 or +<minutes>", at).into())
+    Err(format!(
+        "Unable to parse schedule time '{}'. Use ISO 8601 or +<minutes>",
+        at
+    )
+    .into())
 }
 
 fn relative_time(dt: DateTime<Utc>) -> String {
@@ -551,7 +615,8 @@ mod tests {
             })
         );
 
-        let parsed_cancel = Cli::try_parse_from(["codex-scheduler", "cancel", "job-xyz", "--json"]).unwrap();
+        let parsed_cancel =
+            Cli::try_parse_from(["codex-scheduler", "cancel", "job-xyz", "--json"]).unwrap();
         assert_eq!(
             parsed_cancel.command,
             Some(Commands::Cancel {
@@ -560,13 +625,15 @@ mod tests {
             })
         );
 
-        let parsed_install = Cli::try_parse_from(["codex-scheduler", "install-scheduler", "--json"]).unwrap();
+        let parsed_install =
+            Cli::try_parse_from(["codex-scheduler", "install-scheduler", "--json"]).unwrap();
         assert_eq!(
             parsed_install.command,
             Some(Commands::InstallScheduler { json: true })
         );
 
-        let parsed_uninstall = Cli::try_parse_from(["codex-scheduler", "uninstall-scheduler", "--json"]).unwrap();
+        let parsed_uninstall =
+            Cli::try_parse_from(["codex-scheduler", "uninstall-scheduler", "--json"]).unwrap();
         assert_eq!(
             parsed_uninstall.command,
             Some(Commands::UninstallScheduler { json: true })
@@ -582,7 +649,10 @@ mod tests {
                 installed: true,
                 ready: true,
                 owner: SchedulerOwner::Desktop,
-                executable: Some("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui".to_string()),
+                executable: Some(
+                    "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui"
+                        .to_string(),
+                ),
                 path_matched: true,
                 target_exists: true,
                 owner_target_valid: true,

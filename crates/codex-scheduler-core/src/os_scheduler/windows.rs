@@ -27,16 +27,14 @@ pub trait TaskSchedulerRunner: Send + Sync {
 #[cfg(target_os = "windows")]
 mod com_impl {
     use super::*;
-    use windows::Win32::System::TaskScheduler::{
-        TaskScheduler, ITaskService, ITaskFolder,
-        TASK_CREATE_OR_UPDATE, TASK_LOGON_INTERACTIVE_TOKEN,
-        TASK_STATE_DISABLED,
-    };
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-        COINIT_MULTITHREADED,
+        CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize,
     };
-
+    use windows::Win32::System::TaskScheduler::{
+        ITaskFolder, ITaskService, TASK_CREATE_OR_UPDATE, TASK_LOGON_INTERACTIVE_TOKEN,
+        TASK_STATE_DISABLED, TaskScheduler,
+    };
 
     use windows::core::BSTR;
 
@@ -60,12 +58,18 @@ mod com_impl {
     pub fn query_task_com(task_name: &str) -> Result<Option<ScheduledTaskDetails>, SchedulerError> {
         let _guard = ComGuard::new();
         unsafe {
-            let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)
-                .map_err(|e| SchedulerError::CommandFailed(format!("CoCreateInstance TaskScheduler failed: {e}")))?;
-            service.Connect(None, None, None, None)
-                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::Connect failed: {e}")))?;
-            let root_folder: ITaskFolder = service.GetFolder(&BSTR::from("\\"))
-                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::GetFolder failed: {e}")))?;
+            let service: ITaskService =
+                CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER).map_err(|e| {
+                    SchedulerError::CommandFailed(format!(
+                        "CoCreateInstance TaskScheduler failed: {e}"
+                    ))
+                })?;
+            service.Connect(None, None, None, None).map_err(|e| {
+                SchedulerError::CommandFailed(format!("ITaskService::Connect failed: {e}"))
+            })?;
+            let root_folder: ITaskFolder = service.GetFolder(&BSTR::from("\\")).map_err(|e| {
+                SchedulerError::CommandFailed(format!("ITaskService::GetFolder failed: {e}"))
+            })?;
 
             match root_folder.GetTask(&BSTR::from(task_name)) {
                 Ok(task) => {
@@ -84,7 +88,9 @@ mod com_impl {
                     if e.code().0 as u32 == 0x80070002 {
                         Ok(None)
                     } else {
-                        Err(SchedulerError::CommandFailed(format!("ITaskFolder::GetTask failed: {e}")))
+                        Err(SchedulerError::CommandFailed(format!(
+                            "ITaskFolder::GetTask failed: {e}"
+                        )))
                     }
                 }
             }
@@ -94,41 +100,55 @@ mod com_impl {
     pub fn register_task_com(task_name: &str, xml: &str) -> Result<(), SchedulerError> {
         let _guard = ComGuard::new();
         unsafe {
-            let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)
-                .map_err(|e| SchedulerError::CommandFailed(format!("CoCreateInstance TaskScheduler failed: {e}")))?;
-            service.Connect(None, None, None, None)
-                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::Connect failed: {e}")))?;
-            let root_folder: ITaskFolder = service.GetFolder(&BSTR::from("\\"))
-                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::GetFolder failed: {e}")))?;
+            let service: ITaskService =
+                CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER).map_err(|e| {
+                    SchedulerError::CommandFailed(format!(
+                        "CoCreateInstance TaskScheduler failed: {e}"
+                    ))
+                })?;
+            service.Connect(None, None, None, None).map_err(|e| {
+                SchedulerError::CommandFailed(format!("ITaskService::Connect failed: {e}"))
+            })?;
+            let root_folder: ITaskFolder = service.GetFolder(&BSTR::from("\\")).map_err(|e| {
+                SchedulerError::CommandFailed(format!("ITaskService::GetFolder failed: {e}"))
+            })?;
 
             let flags = TASK_CREATE_OR_UPDATE.0;
             let logon_type = TASK_LOGON_INTERACTIVE_TOKEN;
 
-            root_folder.RegisterTask(
-                &BSTR::from(task_name),
-                &BSTR::from(xml),
-                flags,
-                None,
-                None,
-                logon_type,
-                None,
-            ).map_err(|e| SchedulerError::CommandFailed(format!("ITaskFolder::RegisterTask failed: {e}")))?;
+            root_folder
+                .RegisterTask(
+                    &BSTR::from(task_name),
+                    &BSTR::from(xml),
+                    flags,
+                    None,
+                    None,
+                    logon_type,
+                    None,
+                )
+                .map_err(|e| {
+                    SchedulerError::CommandFailed(format!("ITaskFolder::RegisterTask failed: {e}"))
+                })?;
 
             Ok(())
-
-
         }
     }
 
     pub fn delete_task_com(task_name: &str) -> Result<(), SchedulerError> {
         let _guard = ComGuard::new();
         unsafe {
-            let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)
-                .map_err(|e| SchedulerError::CommandFailed(format!("CoCreateInstance TaskScheduler failed: {e}")))?;
-            service.Connect(None, None, None, None)
-                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::Connect failed: {e}")))?;
-            let root_folder: ITaskFolder = service.GetFolder(&BSTR::from("\\"))
-                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::GetFolder failed: {e}")))?;
+            let service: ITaskService =
+                CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER).map_err(|e| {
+                    SchedulerError::CommandFailed(format!(
+                        "CoCreateInstance TaskScheduler failed: {e}"
+                    ))
+                })?;
+            service.Connect(None, None, None, None).map_err(|e| {
+                SchedulerError::CommandFailed(format!("ITaskService::Connect failed: {e}"))
+            })?;
+            let root_folder: ITaskFolder = service.GetFolder(&BSTR::from("\\")).map_err(|e| {
+                SchedulerError::CommandFailed(format!("ITaskService::GetFolder failed: {e}"))
+            })?;
 
             match root_folder.DeleteTask(&BSTR::from(task_name), 0) {
                 Ok(_) => Ok(()),
@@ -136,7 +156,9 @@ mod com_impl {
                     if e.code().0 as u32 == 0x80070002 {
                         Ok(())
                     } else {
-                        Err(SchedulerError::CommandFailed(format!("ITaskFolder::DeleteTask failed: {e}")))
+                        Err(SchedulerError::CommandFailed(format!(
+                            "ITaskFolder::DeleteTask failed: {e}"
+                        )))
                     }
                 }
             }
@@ -337,8 +359,13 @@ impl WindowsTaskScheduler {
         match details {
             Some(d) if d.exists => {
                 let xml = d.xml;
-                let command = xml.as_deref().and_then(|x| Self::extract_xml_tag(x, "Command")).map(PathBuf::from);
-                let arguments = xml.as_deref().and_then(|x| Self::extract_xml_tag(x, "Arguments"));
+                let command = xml
+                    .as_deref()
+                    .and_then(|x| Self::extract_xml_tag(x, "Command"))
+                    .map(PathBuf::from);
+                let arguments = xml
+                    .as_deref()
+                    .and_then(|x| Self::extract_xml_tag(x, "Arguments"));
                 Ok(TaskInfo {
                     exists: true,
                     enabled: d.enabled,
@@ -397,7 +424,6 @@ impl SchedulerBackend for WindowsTaskScheduler {
         // Arguments must contain canonical --scheduler-tick
         task.arguments.as_deref() == Some(TICK_ARG)
     }
-
 
     fn is_scheduler_path_matched(&self, exe_path: &Path) -> bool {
         let task = match self.query_task() {
@@ -564,12 +590,15 @@ impl SchedulerBackend for WindowsTaskScheduler {
                 } else {
                     // ST-04: Desktop unhealthy / disabled + CLI -> Safe Repair (preserve Desktop target)
                     let desktop_exe = self.get_scheduler_executable_path().ok_or_else(|| {
-                        SchedulerError::CommandFailed("Failed to get Desktop target path".to_string())
+                        SchedulerError::CommandFailed(
+                            "Failed to get Desktop target path".to_string(),
+                        )
                     })?;
                     self.register_task_xml(&desktop_exe)?;
                     if !self.is_scheduler_ready() {
                         return Err(SchedulerError::CommandFailed(
-                            "Desktop Task was repaired, but Task Scheduler still reports not ready".to_string(),
+                            "Desktop Task was repaired, but Task Scheduler still reports not ready"
+                                .to_string(),
                         ));
                     }
                     return Ok(());
@@ -599,7 +628,8 @@ impl SchedulerBackend for WindowsTaskScheduler {
                 self.register_task_xml(target_exe_path)?;
                 if !self.is_scheduler_ready() {
                     return Err(SchedulerError::CommandFailed(
-                        "CLI Task was repaired, but Task Scheduler still reports not ready".to_string(),
+                        "CLI Task was repaired, but Task Scheduler still reports not ready"
+                            .to_string(),
                     ));
                 }
                 return Ok(());
@@ -680,13 +710,22 @@ pub mod tests {
     }
 
     impl TaskSchedulerRunner for MockTaskSchedulerRunner {
-        fn query_task(&self, task_name: &str) -> Result<Option<ScheduledTaskDetails>, SchedulerError> {
-            self.calls.lock().unwrap().push(format!("query:{}", task_name));
+        fn query_task(
+            &self,
+            task_name: &str,
+        ) -> Result<Option<ScheduledTaskDetails>, SchedulerError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("query:{}", task_name));
             Ok(self.task.lock().unwrap().clone())
         }
 
         fn register_task(&self, task_name: &str, xml: &str) -> Result<(), SchedulerError> {
-            self.calls.lock().unwrap().push(format!("register:{}", task_name));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("register:{}", task_name));
             *self.task.lock().unwrap() = Some(ScheduledTaskDetails {
                 exists: true,
                 enabled: true,
@@ -697,7 +736,10 @@ pub mod tests {
         }
 
         fn delete_task(&self, task_name: &str) -> Result<(), SchedulerError> {
-            self.calls.lock().unwrap().push(format!("delete:{}", task_name));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("delete:{}", task_name));
             *self.task.lock().unwrap() = None;
             Ok(())
         }
@@ -717,7 +759,9 @@ pub mod tests {
         assert!(xml.contains("<StartWhenAvailable>true</StartWhenAvailable>"));
         assert!(xml.contains("<ExecutionTimeLimit>PT72H</ExecutionTimeLimit>"));
         assert!(xml.contains("<Priority>7</Priority>"));
-        assert!(xml.contains(r"<Command>C:\Program Files\Codex Scheduler\codex-scheduler-gui.exe</Command>"));
+        assert!(xml.contains(
+            r"<Command>C:\Program Files\Codex Scheduler\codex-scheduler-gui.exe</Command>"
+        ));
         assert!(xml.contains("<Arguments>--scheduler-tick</Arguments>"));
     }
 
@@ -757,7 +801,10 @@ pub mod tests {
         assert!(scheduler.is_scheduler_installed());
         assert!(scheduler.is_scheduler_ready());
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Cli);
-        assert_eq!(scheduler.get_scheduler_executable_path(), Some(cli_exe.clone()));
+        assert_eq!(
+            scheduler.get_scheduler_executable_path(),
+            Some(cli_exe.clone())
+        );
         assert!(scheduler.is_scheduler_path_matched(&cli_exe));
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -781,7 +828,10 @@ pub mod tests {
         assert!(scheduler.is_scheduler_installed());
         assert!(scheduler.is_scheduler_ready());
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
-        assert_eq!(scheduler.get_scheduler_executable_path(), Some(desk_exe.clone()));
+        assert_eq!(
+            scheduler.get_scheduler_executable_path(),
+            Some(desk_exe.clone())
+        );
         assert!(scheduler.is_scheduler_path_matched(&desk_exe));
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -807,11 +857,17 @@ pub mod tests {
 
         // ST-03: CLI caller calls ensure_scheduler_installed
         let res = scheduler.ensure_scheduler_installed(&cli_exe);
-        assert!(res.is_ok(), "CLI caller against healthy Desktop task should succeed as no-op");
+        assert!(
+            res.is_ok(),
+            "CLI caller against healthy Desktop task should succeed as no-op"
+        );
 
         // Must retain Desktop owner and Desktop path
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
-        assert_eq!(scheduler.get_scheduler_executable_path(), Some(desk_exe.clone()));
+        assert_eq!(
+            scheduler.get_scheduler_executable_path(),
+            Some(desk_exe.clone())
+        );
 
         // No mutation call (register) should have been issued
         let calls = runner.calls.lock().unwrap();
@@ -983,7 +1039,10 @@ pub mod tests {
         let res = scheduler.ensure_scheduler_installed(&real_desktop_exe);
         assert!(res.is_ok());
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
-        assert_eq!(scheduler.get_scheduler_executable_path(), Some(real_desktop_exe));
+        assert_eq!(
+            scheduler.get_scheduler_executable_path(),
+            Some(real_desktop_exe)
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1006,7 +1065,10 @@ pub mod tests {
         let res11 = scheduler.ensure_scheduler_installed(&real_cli_exe);
         assert!(res11.is_ok());
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Cli);
-        assert_eq!(scheduler.get_scheduler_executable_path(), Some(real_cli_exe));
+        assert_eq!(
+            scheduler.get_scheduler_executable_path(),
+            Some(real_cli_exe)
+        );
 
         // ST-12: Stale CLI + Desktop caller -> Safe takeover to Desktop
         let runner12 = MockTaskSchedulerRunner::with_task(initial_xml, true);
@@ -1015,7 +1077,10 @@ pub mod tests {
         let res12 = scheduler12.ensure_scheduler_installed(&real_desk_exe);
         assert!(res12.is_ok());
         assert_eq!(scheduler12.get_scheduler_owner(), SchedulerOwner::Desktop);
-        assert_eq!(scheduler12.get_scheduler_executable_path(), Some(real_desk_exe));
+        assert_eq!(
+            scheduler12.get_scheduler_executable_path(),
+            Some(real_desk_exe)
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1027,7 +1092,9 @@ pub mod tests {
         let cli_exe = temp_dir.join("codex-scheduler.exe");
         fs::write(&cli_exe, b"test").unwrap();
 
-        let malformed_xml = "<Task><Actions><Exec><Command>notepad.exe</Command></Exec></Actions></Task>".to_string();
+        let malformed_xml =
+            "<Task><Actions><Exec><Command>notepad.exe</Command></Exec></Actions></Task>"
+                .to_string();
         let runner = MockTaskSchedulerRunner::with_task(malformed_xml.clone(), true);
         let scheduler = WindowsTaskScheduler::with_runner(Box::new(runner.clone()));
 
@@ -1042,7 +1109,12 @@ pub mod tests {
             }
             other => panic!("Expected MalformedConfiguration, got {:?}", other),
         }
-        let task_xml = runner.task.lock().unwrap().as_ref().and_then(|t| t.xml.clone());
+        let task_xml = runner
+            .task
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|t| t.xml.clone());
         assert_eq!(task_xml, Some(malformed_xml));
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1090,12 +1162,13 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_atomic_scheduling_rejection_on_invalid_scheduler() {
-        use crate::store::JobStore;
         use crate::SchedulerService;
         use crate::models::ProviderType;
+        use crate::store::JobStore;
         use chrono::Utc;
 
-        let temp_dir = std::env::temp_dir().join(format!("test-atomic-win-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-atomic-win-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
 
         let non_existent_desk_exe = temp_dir.join("stale").join("codex-scheduler-gui.exe");
@@ -1108,11 +1181,8 @@ pub mod tests {
 
         let jobs_path = temp_dir.join("jobs.json");
         let store = JobStore::new_with_path(&jobs_path);
-        let service = SchedulerService::with_scheduler(
-            store.clone(),
-            Some(cli_exe),
-            Box::new(scheduler),
-        );
+        let service =
+            SchedulerService::with_scheduler(store.clone(), Some(cli_exe), Box::new(scheduler));
 
         let sched_res = service.schedule_job(
             ProviderType::Codex,
@@ -1123,9 +1193,16 @@ pub mod tests {
             None,
         );
 
-        assert!(sched_res.is_err(), "schedule_job must fail when Windows scheduler is in stale/invalid state");
+        assert!(
+            sched_res.is_err(),
+            "schedule_job must fail when Windows scheduler is in stale/invalid state"
+        );
         let all_jobs = store.load_all().unwrap();
-        assert_eq!(all_jobs.len(), 0, "JobStore must remain completely empty on scheduler error");
+        assert_eq!(
+            all_jobs.len(),
+            0,
+            "JobStore must remain completely empty on scheduler error"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

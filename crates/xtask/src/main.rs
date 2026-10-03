@@ -55,7 +55,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             no_test,
             dry_run,
         } => {
-            run_release(&root, &target, message.as_deref(), no_push, no_test, dry_run)?;
+            run_release(
+                &root,
+                &target,
+                message.as_deref(),
+                no_push,
+                no_test,
+                dry_run,
+            )?;
         }
         Commands::CheckRationale => {
             if let Err(e) = rationale::run_check_rationale(&root) {
@@ -120,7 +127,10 @@ fn run_release(
         println!("  - Cargo.toml -> v{}", next_version);
         println!("  - package.json -> v{}", next_version);
         println!("  - apps/gui/package.json -> v{}", next_version);
-        println!("  - apps/gui/src-tauri/tauri.conf.json -> v{}", next_version);
+        println!(
+            "  - apps/gui/src-tauri/tauri.conf.json -> v{}",
+            next_version
+        );
         println!("  - cargo check & Cargo.lock sync");
         if !no_test {
             println!("  - Run cargo xtask check-all (tests, lint, build, rationale)");
@@ -134,7 +144,10 @@ fn run_release(
     update_cargo_toml(&cargo_toml_path, &next_version)?;
     update_json_version(&root.join("package.json"), &next_version)?;
     update_json_version(&root.join("apps/gui/package.json"), &next_version)?;
-    update_json_version(&root.join("apps/gui/src-tauri/tauri.conf.json"), &next_version)?;
+    update_json_version(
+        &root.join("apps/gui/src-tauri/tauri.conf.json"),
+        &next_version,
+    )?;
 
     // 4. Sync Cargo.lock
     println!("[2/5] Synchronizing Cargo.lock...");
@@ -165,13 +178,18 @@ fn run_release(
     )?;
 
     let release_summary = msg.unwrap_or("自動リリースパイプラインによるバージョン更新");
-    let commit_msg = format!("chore(release): バージョンを0.2.2に更新\n\n【リリース内容】\n{}", release_summary)
-        .replace("0.2.2", &next_version);
+    let commit_msg = format!(
+        "chore(release): バージョンを0.2.2に更新\n\n【リリース内容】\n{}",
+        release_summary
+    )
+    .replace("0.2.2", &next_version);
 
     run_cmd(root, "git", &["commit", "-m", &commit_msg])?;
 
     // Update execution-state.md Candidate hash
-    let head_rev = run_cmd_output(root, "git", &["rev-parse", "HEAD"])?.trim().to_string();
+    let head_rev = run_cmd_output(root, "git", &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string();
     update_execution_state_candidate(root, &head_rev)?;
     run_cmd(root, "git", &["add", "docs/execution-state.md"])?;
     run_cmd(
@@ -180,7 +198,10 @@ fn run_release(
         &[
             "commit",
             "-m",
-            &format!("docs: 実行状態Candidateハッシュをv{}リリースコミットへ更新", next_version),
+            &format!(
+                "docs: 実行状態Candidateハッシュをv{}リリースコミットへ更新",
+                next_version
+            ),
         ],
     )?;
 
@@ -191,14 +212,20 @@ fn run_release(
 
     // 7. Git push
     if !no_push {
-        println!("[5/5] Pushing main branch and tag {} to origin...", tag_name);
+        println!(
+            "[5/5] Pushing main branch and tag {} to origin...",
+            tag_name
+        );
         run_cmd(root, "git", &["push", "origin", "main"])?;
         run_cmd(root, "git", &["push", "origin", &tag_name])?;
         println!("\n Successfully released v{}!", next_version);
         println!("GitHub Actions release pipeline will build macOS and Windows installers.");
     } else {
         println!("\n[5/5] Skipped push (--no-push specified).");
-        println!("Run manually: git push origin main && git push origin {}", tag_name);
+        println!(
+            "Run manually: git push origin main && git push origin {}",
+            tag_name
+        );
     }
 
     Ok(())
@@ -221,10 +248,17 @@ fn parse_cargo_workspace_version(content: &str) -> Option<String> {
     None
 }
 
-fn calculate_next_version(current: &str, target: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn calculate_next_version(
+    current: &str,
+    target: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = current.split('.').collect();
     if parts.len() != 3 {
-        return Err(format!("Current version '{}' is not valid SemVer (expected X.Y.Z)", current).into());
+        return Err(format!(
+            "Current version '{}' is not valid SemVer (expected X.Y.Z)",
+            current
+        )
+        .into());
     }
     let major: u64 = parts[0].parse()?;
     let minor: u64 = parts[1].parse()?;
@@ -278,14 +312,20 @@ fn update_json_version(path: &Path, new_ver: &str) -> Result<(), Box<dyn std::er
     let content = fs::read_to_string(path)?;
     let mut val: serde_json::Value = serde_json::from_str(&content)?;
     if let Some(obj) = val.as_object_mut() {
-        obj.insert("version".to_string(), serde_json::Value::String(new_ver.to_string()));
+        obj.insert(
+            "version".to_string(),
+            serde_json::Value::String(new_ver.to_string()),
+        );
     }
     let formatted = serde_json::to_string_pretty(&val)?;
     fs::write(path, formatted + "\n")?;
     Ok(())
 }
 
-fn update_execution_state_candidate(root: &Path, head_rev: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn update_execution_state_candidate(
+    root: &Path,
+    head_rev: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let path = root.join("docs/execution-state.md");
     if !path.exists() {
         return Ok(());
@@ -304,10 +344,7 @@ fn update_execution_state_candidate(root: &Path, head_rev: &str) -> Result<(), B
 }
 
 fn run_cmd(root: &Path, cmd: &str, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-    let status = Command::new(cmd)
-        .current_dir(root)
-        .args(args)
-        .status()?;
+    let status = Command::new(cmd).current_dir(root).args(args).status()?;
 
     if !status.success() {
         return Err(format!("Command failed: {} {:?}", cmd, args).into());
@@ -315,11 +352,12 @@ fn run_cmd(root: &Path, cmd: &str, args: &[&str]) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-fn run_cmd_output(root: &Path, cmd: &str, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
-    let output = Command::new(cmd)
-        .current_dir(root)
-        .args(args)
-        .output()?;
+fn run_cmd_output(
+    root: &Path,
+    cmd: &str,
+    args: &[&str],
+) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new(cmd).current_dir(root).args(args).output()?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);

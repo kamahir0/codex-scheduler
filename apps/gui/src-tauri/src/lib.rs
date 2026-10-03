@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
+use codex_scheduler_core::SchedulerService;
 use codex_scheduler_core::models::{Job, ProviderType, RetryPolicy};
 use codex_scheduler_core::store::JobStore;
-use codex_scheduler_core::SchedulerService;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -151,7 +151,7 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
     let codex_res = adapter.resolve_executable();
     let (codex_installed, codex_path) = match codex_res {
         Ok(p) => {
-            let exists = p.exists() || p.to_string_lossy() == "codex";
+            let exists = p.exists();
             (exists, Some(p.to_string_lossy().to_string()))
         }
         Err(_) => (false, None),
@@ -210,13 +210,17 @@ pub fn run_headless_tick() {
             }
         };
 
-        let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-scheduler-gui"));
+        let exe_path =
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-scheduler-gui"));
         let service = SchedulerService::new(store, exe_path);
 
         match service.execute_tick().await {
             Ok(finished) => {
                 if !finished.is_empty() {
-                    println!("[Headless Scheduler] Executed {} due job(s).", finished.len());
+                    println!(
+                        "[Headless Scheduler] Executed {} due job(s).",
+                        finished.len()
+                    );
                 }
             }
             Err(e) => {
@@ -236,7 +240,10 @@ pub fn run() {
     let scheduler_error = match service.ensure_scheduler() {
         Ok(()) => None,
         Err(e) => {
-            eprintln!("[Scheduler] Warning: Failed to ensure OS scheduler on startup: {}", e);
+            eprintln!(
+                "[Scheduler] Warning: Failed to ensure OS scheduler on startup: {}",
+                e
+            );
             Some(e.to_string())
         }
     };
@@ -283,7 +290,10 @@ mod tests {
             AppExecutionMode::HeadlessSchedulerTick
         );
         assert_eq!(
-            parse_execution_mode(vec!["/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui", "--scheduler-tick"]),
+            parse_execution_mode(vec![
+                "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui",
+                "--scheduler-tick"
+            ]),
             AppExecutionMode::HeadlessSchedulerTick
         );
     }

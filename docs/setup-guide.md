@@ -16,6 +16,10 @@ codex --version
 - **成功**: `codex-cli 0.x.x` のようにバージョンが表示されます。
 - **失敗**: `command not found` または `用語 'codex' は認識されません` と表示される場合は、OpenAI 公式の案内に従って先に Codex CLI をインストールしてください。
 
+> [!IMPORTANT]
+> **Windows 環境でのご注意**:  
+> Windows 版 Codex Scheduler では、Codex CLI も Windows 側（PowerShell / コマンドプロンプト）にインストールされている必要があります（例: `npm install -g @openai/codex@latest`）。WSL（Windows Subsystem for Linux）内にのみインストールされた Codex CLI は本バージョンのサポート対象外です。PowerShell で `where.exe codex` を実行してパスが表示されることをご確認ください。
+
 ---
 
 ## どれを使う？（Desktop版 vs CLI版）
@@ -125,7 +129,7 @@ codex-scheduler install-scheduler
 ```powershell
 codex-scheduler status --json
 ```
-出力された JSON で以下が確認できればセットアップ完了です：
+出力された JSON で以下が確認できれば、OSバックグラウンドスケジューラの常設登録は完了です（※ Codex CLI 自体の動作可否は、前提条件の `codex --version` で確認してください）：
 - `"installed": true`（OSスケジューラに登録されている）
 - `"ready": true`（実行準備完了）
 - `"target_exists": true`（実行ファイルが存在する）
@@ -168,7 +172,7 @@ codex-scheduler install-scheduler
 ```bash
 codex-scheduler status --json
 ```
-出力された JSON で以下が確認できればセットアップ完了です：
+出力された JSON で以下が確認できれば、OSバックグラウンドスケジューラの常設登録は完了です（※ Codex CLI 自体の動作可否は、前提条件の `codex --version` で確認してください）：
 - `"installed": true`（OSスケジューラに登録されている）
 - `"ready": true`（実行準備完了）
 - `"target_exists": true`（実行ファイルが存在する）
@@ -221,7 +225,7 @@ Desktop版とCLI版は、同一のPC上で安心して併用できます。
 
 ### 1. `codex` コマンドが見つからない
 - **症状**: Desktop画面に「Codex CLI 未検出」と表示される、または `codex --version` でエラーになる。
-- **対策**: OpenAI 公式の案内に従って Codex CLI をインストールしてください。また、ターミナルで `which codex`（macOS）や `Get-Command codex`（PowerShell）を実行し、実行ファイルが存在するディレクトリが環境変数 PATH に含まれているか確認してください。
+- **対策**: OpenAI 公式の案内に従って Codex CLI をインストールしてください。また、ターミナルで `which codex`（macOS）や、PowerShell で `where.exe codex`（Windows）を実行し、実行ファイルが存在するディレクトリが環境変数 PATH に含まれているか確認してください。
 
 ### 2. macOS で「開発元を確認できないため開けません」と出る
 - **対策**:
@@ -238,3 +242,7 @@ Desktop版とCLI版は、同一のPC上で安心して併用できます。
   codex-scheduler status
   ```
   `Status: Ready` または `status --json` の各項目（`installed`, `ready`, `target_exists`, `owner_target_valid`）が `true` になっていれば正常に稼働しています。
+
+### 5. ジョブ実行結果に「Not inside a trusted directory...」と出る
+- **症状**: 実行履歴に `Not inside a trusted directory and --skip-git-repo-check was not specified.` と記録される。
+- **対策**: Codex CLI 本体のセキュリティ保護機能により、Git リポジトリ外（ダウンロードフォルダ等）での非対話実行が制限されています。スケジュール登録時の作業ディレクトリ（`--cwd`）には、実際に作業する Git プロジェクトのフォルダを指定してください。

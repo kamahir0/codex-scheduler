@@ -39,11 +39,15 @@ pub enum SchedulerError {
     InvalidExecutable(String),
     #[error("Expected executable does not exist: {0}")]
     ExecutableNotFound(String),
-    #[error("Persistent scheduler is owned by Desktop application and cannot be uninstalled via CLI")]
+    #[error(
+        "Persistent scheduler is owned by Desktop application and cannot be uninstalled via CLI"
+    )]
     DesktopOwnerProtected,
     #[error("Malformed or unknown scheduler configuration: {0}")]
     MalformedConfiguration(String),
-    #[error("On macOS, scheduler registration must be performed via Codex Scheduler.app before using CLI scheduling")]
+    #[error(
+        "On macOS, scheduler registration must be performed via Codex Scheduler.app before using CLI scheduling"
+    )]
     DesktopAppRequired,
 }
 
@@ -235,4 +239,3 @@ mod tests {
         assert!(scheduler.unregister_job("job-1").is_ok());
     }
 }
-

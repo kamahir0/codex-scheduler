@@ -607,10 +607,13 @@ mod tests {
 
     #[test]
     fn test_scheduler_plist_generation() {
-        let app_path = Path::new("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui");
+        let app_path =
+            Path::new("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui");
         let plist = MacOsLaunchdScheduler::generate_scheduler_plist_content(app_path);
         assert!(plist.contains(SCHEDULER_LABEL));
-        assert!(plist.contains("<string>/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui</string>"));
+        assert!(plist.contains(
+            "<string>/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui</string>"
+        ));
         assert!(plist.contains("<string>--scheduler-tick</string>"));
         assert!(!plist.contains("codex-scheduler-cli"));
         assert!(plist.contains("<key>StartInterval</key>\n    <integer>60</integer>"));
@@ -634,8 +637,7 @@ mod tests {
         let extracted = MacOsLaunchdScheduler::extract_executable_path_from_plist(&plist);
         assert_eq!(extracted, Some(app_path.to_path_buf()));
 
-        let temp_dir =
-            std::env::temp_dir().join(format!("test-xml-path-{}", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!("test-xml-path-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
         fs::write(scheduler.scheduler_plist_path(), plist).unwrap();
@@ -691,18 +693,23 @@ mod tests {
 
     #[test]
     fn test_ensure_scheduler_validation_errors() {
-        let temp_dir = std::env::temp_dir().join(format!("test-launchd-val-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-launchd-val-{}", uuid::Uuid::new_v4()));
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
 
         // 1. Non-absolute path
-        let err1 = scheduler.ensure_scheduler_installed(Path::new("relative/path")).unwrap_err();
+        let err1 = scheduler
+            .ensure_scheduler_installed(Path::new("relative/path"))
+            .unwrap_err();
         match err1 {
             SchedulerError::InvalidExecutable(_) => {}
             _ => panic!("Expected InvalidExecutable error, got: {:?}", err1),
         }
 
         // 2. Missing executable
-        let err2 = scheduler.ensure_scheduler_installed(Path::new("/non/existent/path/binary")).unwrap_err();
+        let err2 = scheduler
+            .ensure_scheduler_installed(Path::new("/non/existent/path/binary"))
+            .unwrap_err();
         match err2 {
             SchedulerError::ExecutableNotFound(_) => {}
             _ => panic!("Expected ExecutableNotFound error, got: {:?}", err2),
@@ -713,7 +720,8 @@ mod tests {
 
     #[test]
     fn test_legacy_worker_plist_migration() {
-        let temp_dir = std::env::temp_dir().join(format!("test-migration-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-migration-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
 
@@ -762,7 +770,8 @@ mod tests {
 
     #[test]
     fn test_ownership_no_scheduler_desktop_ensure() {
-        let temp_dir = std::env::temp_dir().join(format!("test-own-no-desk-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-own-no-desk-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::None);
@@ -782,7 +791,8 @@ mod tests {
 
     #[test]
     fn test_ownership_no_scheduler_cli_ensure() {
-        let temp_dir = std::env::temp_dir().join(format!("test-own-no-cli-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-own-no-cli-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::None);
@@ -800,7 +810,8 @@ mod tests {
 
     #[test]
     fn test_ownership_cli_owner_cli_ensure_noop() {
-        let temp_dir = std::env::temp_dir().join(format!("test-own-cli-noop-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-own-cli-noop-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
 
@@ -820,7 +831,8 @@ mod tests {
 
     #[test]
     fn test_ownership_desktop_owner_cli_ensure_retains_desktop() {
-        let temp_dir = std::env::temp_dir().join(format!("test-own-desk-retain-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-own-desk-retain-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let runner = Box::new(MockLaunchctlRunner::new(true));
         let scheduler = MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), runner);
@@ -839,7 +851,10 @@ mod tests {
 
         // 2. CLI tries to ensure scheduler -> MUST retain Desktop owner and succeed
         let cli_res = scheduler.ensure_scheduler_installed(&cli_exe);
-        assert!(cli_res.is_ok(), "CLI ensure against Desktop owner should return Ok as no-op");
+        assert!(
+            cli_res.is_ok(),
+            "CLI ensure against Desktop owner should return Ok as no-op"
+        );
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
 
         let extracted = scheduler.get_scheduler_executable_path();
@@ -850,7 +865,8 @@ mod tests {
 
     #[test]
     fn test_ownership_cli_owner_desktop_ensure_migrates_to_desktop() {
-        let temp_dir = std::env::temp_dir().join(format!("test-own-migrate-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-own-migrate-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
 
@@ -878,7 +894,8 @@ mod tests {
 
     #[test]
     fn test_ownership_desktop_owner_desktop_ensure_idempotent() {
-        let temp_dir = std::env::temp_dir().join(format!("test-own-desk-idem-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-own-desk-idem-{}", uuid::Uuid::new_v4()));
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
 
         let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
@@ -898,7 +915,8 @@ mod tests {
 
     #[test]
     fn test_ownership_known_legacy_owner_migrates_safely() {
-        let temp_dir = std::env::temp_dir().join(format!("test-own-legacy-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-own-legacy-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
 
@@ -933,7 +951,8 @@ mod tests {
 
     #[test]
     fn test_ownership_unknown_malformed_config_errors_without_destructive_overwrite() {
-        let temp_dir = std::env::temp_dir().join(format!("test-own-malformed-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-own-malformed-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
 
@@ -961,7 +980,8 @@ mod tests {
 
     #[test]
     fn test_ownership_single_launchagent_invariant_and_cli_uninstall_protection() {
-        let temp_dir = std::env::temp_dir().join(format!("test-own-single-inv-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-own-single-inv-{}", uuid::Uuid::new_v4()));
         let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
 
         let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
@@ -980,9 +1000,15 @@ mod tests {
         let uninst_err = scheduler.uninstall_scheduler_as_cli().unwrap_err();
         match uninst_err {
             SchedulerError::DesktopOwnerProtected => {}
-            _ => panic!("Expected DesktopOwnerProtected error, got: {:?}", uninst_err),
+            _ => panic!(
+                "Expected DesktopOwnerProtected error, got: {:?}",
+                uninst_err
+            ),
         }
-        assert!(scheduler.scheduler_plist_path().exists(), "Desktop-owned plist must not be deleted by CLI");
+        assert!(
+            scheduler.scheduler_plist_path().exists(),
+            "Desktop-owned plist must not be deleted by CLI"
+        );
 
         // 3. Migrate to CLI owner for uninstall test
         // Manually overwrite plist with CLI content
@@ -993,7 +1019,10 @@ mod tests {
         // 4. CLI uninstalls CLI-owned scheduler -> MUST SUCCEED
         let uninst_ok = scheduler.uninstall_scheduler_as_cli();
         assert!(uninst_ok.is_ok());
-        assert!(!scheduler.scheduler_plist_path().exists(), "CLI-owned plist should be deleted");
+        assert!(
+            !scheduler.scheduler_plist_path().exists(),
+            "CLI-owned plist should be deleted"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1013,7 +1042,9 @@ mod tests {
         let extracted = MacOsLaunchdScheduler::extract_executable_path_from_plist(sample_plist);
         assert_eq!(
             extracted,
-            Some(PathBuf::from("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui"))
+            Some(PathBuf::from(
+                "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui"
+            ))
         );
 
         let legacy_plist = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1026,14 +1057,20 @@ mod tests {
     </array>
 </dict>
 </plist>"#;
-        let legacy_extracted = MacOsLaunchdScheduler::extract_executable_path_from_plist(legacy_plist);
+        let legacy_extracted =
+            MacOsLaunchdScheduler::extract_executable_path_from_plist(legacy_plist);
         assert_eq!(
             legacy_extracted,
-            Some(PathBuf::from("/Users/test/.local/share/codex-scheduler/bin/codex-scheduler-cli"))
+            Some(PathBuf::from(
+                "/Users/test/.local/share/codex-scheduler/bin/codex-scheduler-cli"
+            ))
         );
 
         let invalid_plist = "<dict></dict>";
-        assert_eq!(MacOsLaunchdScheduler::extract_executable_path_from_plist(invalid_plist), None);
+        assert_eq!(
+            MacOsLaunchdScheduler::extract_executable_path_from_plist(invalid_plist),
+            None
+        );
     }
 
     #[test]
@@ -1098,7 +1135,9 @@ mod tests {
             stdout: Vec::new(),
             stderr: Vec::new(),
         };
-        assert!(MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &success_out).is_ok());
+        assert!(
+            MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &success_out).is_ok()
+        );
 
         // 2. Not loaded error strings -> Treated as Ok
         for msg in &[
@@ -1112,7 +1151,8 @@ mod tests {
                 stderr: msg.as_bytes().to_vec(),
             };
             assert!(
-                MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &not_loaded_out).is_ok(),
+                MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &not_loaded_out)
+                    .is_ok(),
                 "Expected Ok for not-loaded message: {}",
                 msg
             );
@@ -1124,7 +1164,9 @@ mod tests {
             stdout: b"some stdout".to_vec(),
             stderr: Vec::new(),
         };
-        let err = MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &empty_stderr_fail).unwrap_err();
+        let err =
+            MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &empty_stderr_fail)
+                .unwrap_err();
         match err {
             SchedulerError::CommandFailed(ref s) => {
                 assert!(s.contains("exit status"));
@@ -1139,7 +1181,8 @@ mod tests {
             stdout: Vec::new(),
             stderr: b"Permission denied".to_vec(),
         };
-        let err2 = MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &perm_fail).unwrap_err();
+        let err2 = MacOsLaunchdScheduler::check_launchctl_unload_output(test_plist, &perm_fail)
+            .unwrap_err();
         match err2 {
             SchedulerError::CommandFailed(ref s) => {
                 assert!(s.contains("Permission denied"));
@@ -1148,9 +1191,9 @@ mod tests {
         }
     }
 
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Clone)]
     struct MockLaunchctlRunner {
@@ -1231,7 +1274,8 @@ mod tests {
 
     #[test]
     fn test_desktop_owner_loaded_cli_ensure_no_mutation_and_ready() {
-        let temp_dir = std::env::temp_dir().join(format!("test-desk-loaded-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-desk-loaded-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
 
         let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
@@ -1243,7 +1287,8 @@ mod tests {
         fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
 
         let runner = MockLaunchctlRunner::new(true);
-        let scheduler = MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner.clone()));
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner.clone()));
 
         // Create valid Desktop plist initially
         let initial_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
@@ -1266,15 +1311,24 @@ mod tests {
 
         // Ensure "load" was not called
         let calls = runner.calls.lock().unwrap();
-        let load_calls: Vec<_> = calls[calls_before..].iter().filter(|c| c.first() == Some(&"load".to_string())).collect();
-        assert!(load_calls.is_empty(), "Should not re-load already ready Desktop scheduler");
+        let load_calls: Vec<_> = calls[calls_before..]
+            .iter()
+            .filter(|c| c.first() == Some(&"load".to_string()))
+            .collect();
+        assert!(
+            load_calls.is_empty(),
+            "Should not re-load already ready Desktop scheduler"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_desktop_owner_unloaded_safely_repairs_without_altering_desktop_owner_or_path() {
-        let temp_dir = std::env::temp_dir().join(format!("test-desk-unloaded-repair-{}", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "test-desk-unloaded-repair-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&temp_dir).unwrap();
 
         let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
@@ -1287,14 +1341,18 @@ mod tests {
 
         // Start with loaded = false (unloaded state in launchd)
         let runner = MockLaunchctlRunner::new(false);
-        let scheduler = MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner.clone()));
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner.clone()));
 
         // Plist exists on disk pointing to Desktop
         let initial_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
         fs::write(scheduler.scheduler_plist_path(), &initial_content).unwrap();
 
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
-        assert!(!scheduler.is_scheduler_ready(), "Should initially be unloaded / not ready");
+        assert!(
+            !scheduler.is_scheduler_ready(),
+            "Should initially be unloaded / not ready"
+        );
 
         // CLI ensures: must trigger safe repair (launchctl load -w) of existing Desktop plist!
         let res = scheduler.ensure_scheduler_installed(&cli_exe);
@@ -1302,7 +1360,10 @@ mod tests {
 
         // Verify state after repair:
         // 1. Ready is now true
-        assert!(scheduler.is_scheduler_ready(), "Scheduler should now be ready after repair");
+        assert!(
+            scheduler.is_scheduler_ready(),
+            "Scheduler should now be ready after repair"
+        );
         // 2. Owner is still Desktop
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
         // 3. Executable path is still Desktop app, not CLI
@@ -1313,7 +1374,9 @@ mod tests {
 
         // Verify runner received load command
         let calls = runner.calls.lock().unwrap();
-        let has_load = calls.iter().any(|c| c.contains(&"load".to_string()) && c.contains(&"-w".to_string()));
+        let has_load = calls
+            .iter()
+            .any(|c| c.contains(&"load".to_string()) && c.contains(&"-w".to_string()));
         assert!(has_load, "Repair must have executed launchctl load -w");
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1321,7 +1384,8 @@ mod tests {
 
     #[test]
     fn test_desktop_owner_repair_failure_returns_structured_error() {
-        let temp_dir = std::env::temp_dir().join(format!("test-desk-repair-fail-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-desk-repair-fail-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
 
         let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
@@ -1334,7 +1398,8 @@ mod tests {
 
         // Runner configured to fail on load
         let runner = MockLaunchctlRunner::with_load_failure();
-        let scheduler = MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
 
         let initial_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
         fs::write(scheduler.scheduler_plist_path(), &initial_content).unwrap();
@@ -1359,7 +1424,8 @@ mod tests {
 
     #[test]
     fn test_automation_safe_desktop_health_evaluation() {
-        let temp_dir = std::env::temp_dir().join(format!("test-desk-health-eval-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-desk-health-eval-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
 
         let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
@@ -1371,7 +1437,8 @@ mod tests {
         fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
 
         let runner = MockLaunchctlRunner::new(true);
-        let scheduler = MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
 
         let plist_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
         fs::write(scheduler.scheduler_plist_path(), &plist_content).unwrap();
@@ -1390,14 +1457,18 @@ mod tests {
             && scheduler.is_scheduler_ready()
             && scheduler.is_target_executable_exists()
             && scheduler.is_owner_target_valid();
-        assert!(is_healthy, "Automation must judge Desktop owner as healthy even when path_matched is false for CLI");
+        assert!(
+            is_healthy,
+            "Automation must judge Desktop owner as healthy even when path_matched is false for CLI"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_single_launchagent_invariant_maintained_under_all_operations() {
-        let temp_dir = std::env::temp_dir().join(format!("test-single-inv-all-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-single-inv-all-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
 
         let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
@@ -1409,17 +1480,29 @@ mod tests {
         fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
 
         let runner = MockLaunchctlRunner::new(false);
-        let scheduler = MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
 
         // 1. Desktop installs
         scheduler.ensure_scheduler_installed(&desk_exe).unwrap();
-        let plist_count = fs::read_dir(&temp_dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.path().extension().map_or(false, |ext| ext == "plist")).count();
+        let plist_count = fs::read_dir(&temp_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "plist"))
+            .count();
         assert_eq!(plist_count, 1);
 
         // 2. CLI ensures (repairs unloaded)
         scheduler.ensure_scheduler_installed(&cli_exe).unwrap();
-        let plist_count2 = fs::read_dir(&temp_dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.path().extension().map_or(false, |ext| ext == "plist")).count();
-        assert_eq!(plist_count2, 1, "Only single LaunchAgent plist must ever exist");
+        let plist_count2 = fs::read_dir(&temp_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "plist"))
+            .count();
+        assert_eq!(
+            plist_count2, 1,
+            "Only single LaunchAgent plist must ever exist"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1429,35 +1512,57 @@ mod tests {
         use std::path::Path;
 
         // 1. Desktop: must be in .app/ and named exactly "codex-scheduler-gui"
-        assert!(!MacOsLaunchdScheduler::is_desktop_executable(Path::new("/Applications/Other.app/Contents/MacOS/foo")));
-        assert!(!MacOsLaunchdScheduler::is_desktop_executable(Path::new("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui-bar")));
-        assert!(!MacOsLaunchdScheduler::is_desktop_executable(Path::new("/usr/local/bin/codex-scheduler-gui")));
-        assert!(MacOsLaunchdScheduler::is_desktop_executable(Path::new("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui")));
+        assert!(!MacOsLaunchdScheduler::is_desktop_executable(Path::new(
+            "/Applications/Other.app/Contents/MacOS/foo"
+        )));
+        assert!(!MacOsLaunchdScheduler::is_desktop_executable(Path::new(
+            "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui-bar"
+        )));
+        assert!(!MacOsLaunchdScheduler::is_desktop_executable(Path::new(
+            "/usr/local/bin/codex-scheduler-gui"
+        )));
+        assert!(MacOsLaunchdScheduler::is_desktop_executable(Path::new(
+            "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui"
+        )));
 
         // 2. CLI: must be "codex-scheduler" or legacy "codex-scheduler-cli", and NOT inside .app/
-        assert!(MacOsLaunchdScheduler::is_cli_executable(Path::new("/usr/local/bin/codex-scheduler")));
-        assert!(MacOsLaunchdScheduler::is_cli_executable(Path::new("/usr/local/bin/codex-scheduler-cli")));
-        assert!(!MacOsLaunchdScheduler::is_cli_executable(Path::new("/usr/local/bin/codex-scheduler-foo")));
-        assert!(!MacOsLaunchdScheduler::is_cli_executable(Path::new("/usr/local/bin/codex-scheduler-gui")));
-        assert!(!MacOsLaunchdScheduler::is_cli_executable(Path::new("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler")));
+        assert!(MacOsLaunchdScheduler::is_cli_executable(Path::new(
+            "/usr/local/bin/codex-scheduler"
+        )));
+        assert!(MacOsLaunchdScheduler::is_cli_executable(Path::new(
+            "/usr/local/bin/codex-scheduler-cli"
+        )));
+        assert!(!MacOsLaunchdScheduler::is_cli_executable(Path::new(
+            "/usr/local/bin/codex-scheduler-foo"
+        )));
+        assert!(!MacOsLaunchdScheduler::is_cli_executable(Path::new(
+            "/usr/local/bin/codex-scheduler-gui"
+        )));
+        assert!(!MacOsLaunchdScheduler::is_cli_executable(Path::new(
+            "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler"
+        )));
     }
 
     #[tokio::test]
     async fn test_invalid_stale_target_not_overwritten_by_cli_and_atomicity() {
-        use crate::store::JobStore;
         use crate::SchedulerService;
         use crate::models::ProviderType;
+        use crate::store::JobStore;
         use chrono::Utc;
 
-        let temp_dir = std::env::temp_dir().join(format!("test-stale-target-{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-stale-target-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
 
         // 1. Setup a syntactically valid managed plist pointing to a Desktop executable path that does NOT exist
-        let non_existent_desktop_exe = temp_dir.join("Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui");
-        let initial_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&non_existent_desktop_exe);
+        let non_existent_desktop_exe =
+            temp_dir.join("Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui");
+        let initial_content =
+            MacOsLaunchdScheduler::generate_scheduler_plist_content(&non_existent_desktop_exe);
 
         let runner = MockLaunchctlRunner::new(false);
-        let scheduler = MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
         let plist_path = scheduler.scheduler_plist_path();
         fs::write(&plist_path, &initial_content).unwrap();
 
@@ -1474,7 +1579,10 @@ mod tests {
 
         // 3. CLI calls ensure_scheduler_installed: MUST FAIL, must NOT mutate plist, must NOT takeover to CLI
         let ensure_res = scheduler.ensure_scheduler_installed(&cli_exe);
-        assert!(ensure_res.is_err(), "CLI ensure must fail against Invalid stale target registration");
+        assert!(
+            ensure_res.is_err(),
+            "CLI ensure must fail against Invalid stale target registration"
+        );
         match ensure_res.unwrap_err() {
             SchedulerError::ExecutableNotFound(msg) => {
                 assert!(msg.contains("Registered scheduler executable does not exist"));
@@ -1483,8 +1591,15 @@ mod tests {
         }
 
         let bytes_after = fs::read(&plist_path).unwrap();
-        assert_eq!(initial_bytes, bytes_after, "Existing plist bytes must remain completely unchanged");
-        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Invalid, "Owner must remain Invalid, never become Cli");
+        assert_eq!(
+            initial_bytes, bytes_after,
+            "Existing plist bytes must remain completely unchanged"
+        );
+        assert_eq!(
+            scheduler.get_scheduler_owner(),
+            SchedulerOwner::Invalid,
+            "Owner must remain Invalid, never become Cli"
+        );
         assert_ne!(
             scheduler.get_scheduler_executable_path(),
             Some(cli_exe.clone()),
@@ -1494,11 +1609,8 @@ mod tests {
         // 4. Verify schedule_job atomicity via SchedulerService: Job must NOT be saved to store
         let jobs_path = temp_dir.join("jobs.json");
         let store = JobStore::new_with_path(&jobs_path);
-        let service = SchedulerService::with_scheduler(
-            store.clone(),
-            Some(cli_exe),
-            Box::new(scheduler),
-        );
+        let service =
+            SchedulerService::with_scheduler(store.clone(), Some(cli_exe), Box::new(scheduler));
 
         let sched_res = service.schedule_job(
             ProviderType::Codex,
@@ -1508,9 +1620,16 @@ mod tests {
             Utc::now() + chrono::Duration::hours(1),
             None,
         );
-        assert!(sched_res.is_err(), "schedule_job must fail when scheduler is in Invalid/stale state");
+        assert!(
+            sched_res.is_err(),
+            "schedule_job must fail when scheduler is in Invalid/stale state"
+        );
         let all_jobs = store.load_all().unwrap();
-        assert_eq!(all_jobs.len(), 0, "JobStore must remain completely empty on scheduler error");
+        assert_eq!(
+            all_jobs.len(),
+            0,
+            "JobStore must remain completely empty on scheduler error"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

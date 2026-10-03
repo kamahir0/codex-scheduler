@@ -98,8 +98,8 @@ pub fn run_check_all(root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_run_check_steps_all_pass() {
@@ -181,6 +181,9 @@ mod tests {
         assert!(res.is_err());
         let failures = res.unwrap_err();
         assert_eq!(failures.len(), 2);
-        assert_eq!(failures, vec!["step-fail-1".to_string(), "step-fail-2".to_string()]);
+        assert_eq!(
+            failures,
+            vec!["step-fail-1".to_string(), "step-fail-2".to_string()]
+        );
     }
 }

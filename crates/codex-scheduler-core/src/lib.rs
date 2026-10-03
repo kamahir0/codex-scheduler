@@ -5,8 +5,8 @@ pub mod retry;
 pub mod store;
 pub mod worker;
 
-use adapter::codex::CodexAdapter;
 use adapter::ExecutionResult;
+use adapter::codex::CodexAdapter;
 use chrono::Utc;
 use models::{ExecutionAttempt, Job, JobStatus, ProviderType};
 use os_scheduler::get_platform_scheduler;
@@ -117,9 +117,7 @@ impl SchedulerService {
     }
 
     pub fn exe_path(&self) -> &Path {
-        self.exe_path
-            .as_deref()
-            .unwrap_or_else(|| Path::new(""))
+        self.exe_path.as_deref().unwrap_or_else(|| Path::new(""))
     }
 
     pub fn cli_path(&self) -> &Path {
@@ -143,9 +141,11 @@ impl SchedulerService {
             self.scheduler.ensure_scheduler_installed(path)?;
             Ok(())
         } else if self.scheduler.supports_persistent_scheduler() {
-            Err(CoreError::Scheduler(os_scheduler::SchedulerError::ExecutableNotFound(
-                "No executable path configured for scheduler installation".to_string(),
-            )))
+            Err(CoreError::Scheduler(
+                os_scheduler::SchedulerError::ExecutableNotFound(
+                    "No executable path configured for scheduler installation".to_string(),
+                ),
+            ))
         } else {
             Ok(())
         }
@@ -183,7 +183,14 @@ impl SchedulerService {
         scheduled_at: chrono::DateTime<Utc>,
         retry_policy: Option<models::RetryPolicy>,
     ) -> Result<Job, CoreError> {
-        let job = Job::new(provider, session_id, cwd, prompt, scheduled_at, retry_policy)?;
+        let job = Job::new(
+            provider,
+            session_id,
+            cwd,
+            prompt,
+            scheduled_at,
+            retry_policy,
+        )?;
 
         // If invoked from Desktop GUI (is_desktop is true), ensure scheduler is registered with app path.
         // If invoked from CLI (is_desktop is false):
@@ -200,9 +207,11 @@ impl SchedulerService {
                 if let Some(cli_path) = &self.exe_path {
                     self.scheduler.ensure_scheduler_installed(cli_path)?;
                 } else {
-                    return Err(CoreError::Scheduler(os_scheduler::SchedulerError::ExecutableNotFound(
-                        "CLI executable path could not be resolved".to_string(),
-                    )));
+                    return Err(CoreError::Scheduler(
+                        os_scheduler::SchedulerError::ExecutableNotFound(
+                            "CLI executable path could not be resolved".to_string(),
+                        ),
+                    ));
                 }
             }
 

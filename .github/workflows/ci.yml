@@ -179,5 +179,11 @@ jobs:
             exit 1
           }
 
+      - name: Windows Codex Child Process Launch Acceptance Test
+        shell: bash
+        run: |
+          cargo test -p codex-scheduler-core --test integration_test test_windows_codex_process_launch -- --nocapture
+
+
 
 

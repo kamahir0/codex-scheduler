@@ -173,7 +173,10 @@ mod tests {
             Utc::now(),
             None,
         );
-        assert!(matches!(res, Err(ValidationError::InvalidWorkingDirectory(_))));
+        assert!(matches!(
+            res,
+            Err(ValidationError::InvalidWorkingDirectory(_))
+        ));
     }
 
     #[test]

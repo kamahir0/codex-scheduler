@@ -1,3 +1,6 @@
+mod check_all;
+mod rationale;
+
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,7 +29,7 @@ enum Commands {
         #[arg(long)]
         no_push: bool,
 
-        /// Skip running tests and frontend build before releasing
+        /// Skip running verification checks before releasing
         #[arg(long)]
         no_test: bool,
 
@@ -34,6 +37,10 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Verify implementation rationales (WHY / WHAT BREAKS / EVIDENCE) across source files.
+    CheckRationale,
+    /// Run all mechanical checks (rationale, cargo tests, frontend lint & build).
+    CheckAll,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,6 +56,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             dry_run,
         } => {
             run_release(&root, &target, message.as_deref(), no_push, no_test, dry_run)?;
+        }
+        Commands::CheckRationale => {
+            if let Err(e) = rationale::run_check_rationale(&root) {
+                eprintln!("\nError: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::CheckAll => {
+            if let Err(e) = check_all::run_check_all(&root) {
+                eprintln!("\nError: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 
@@ -104,7 +123,7 @@ fn run_release(
         println!("  - apps/gui/src-tauri/tauri.conf.json -> v{}", next_version);
         println!("  - cargo check & Cargo.lock sync");
         if !no_test {
-            println!("  - Run cargo test and frontend build");
+            println!("  - Run cargo xtask check-all (tests, lint, build, rationale)");
         }
         println!("  - Commit, Tag v{}, and push to origin", next_version);
         return Ok(());
@@ -121,13 +140,13 @@ fn run_release(
     println!("[2/5] Synchronizing Cargo.lock...");
     run_cmd(root, "cargo", &["check"])?;
 
-    // 5. Run tests & verification
+    // 5. Run verification checks
     if !no_test {
-        println!("[3/5] Running verification tests & frontend build...");
-        run_cmd(root, "cargo", &["test", "--workspace", "--exclude", "xtask"])?;
-        run_cmd(root, "npm", &["run", "frontend:build"])?;
+        println!("[3/5] Running mechanical verification (check-all)...");
+        check_all::run_check_all(root)
+            .map_err(|e| format!("Release verification failed: {}", e))?;
     } else {
-        println!("[3/5] Skipping tests (--no-test specified)");
+        println!("[3/5] Skipping verification (--no-test specified)");
     }
 
     // 6. Git commit & tag

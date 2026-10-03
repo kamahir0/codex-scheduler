@@ -2,6 +2,8 @@
   "name": "codex-scheduler",
   "private": true,
   "scripts": {
+    "check-all": "cargo xtask check-all",
+    "check-rationale": "cargo xtask check-rationale",
     "frontend:build": "npm --workspace @codex-scheduler/gui run build",
     "frontend:lint": "npm --workspace @codex-scheduler/gui run lint",
     "gui:build": "npm --workspace @codex-scheduler/gui run tauri -- build",

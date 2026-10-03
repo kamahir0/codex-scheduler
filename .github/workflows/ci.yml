@@ -81,21 +81,56 @@ jobs:
           Write-Host '--- Current Identity ---'
           whoami
           whoami /groups
-          
-          Write-Host '--- Testing codex-scheduler install-scheduler ---'
-          & '$PWD\target\debug\codex-scheduler.exe' install-scheduler
-          Write-Host "install-scheduler exit code: `$LASTEXITCODE"
-          
-          Write-Host '--- Testing codex-scheduler status --json ---'
-          & '$PWD\target\debug\codex-scheduler.exe' status --json
-          
-          Write-Host '--- Testing codex-scheduler uninstall-scheduler ---'
-          & '$PWD\target\debug\codex-scheduler.exe' uninstall-scheduler
-          Write-Host "uninstall-scheduler exit code: `$LASTEXITCODE"
+          Write-Host 'USERPROFILE:' `$env:USERPROFILE
 
-          Write-Host '--- Testing direct schtasks create without XML ---'
-          schtasks.exe /Create /TN "StandardTestTask" /TR "cmd.exe /c exit 0" /SC ONLOGON /F
-          Write-Host "direct schtasks create exit code: `$LASTEXITCODE"
+          Write-Host '--- Testing Task Scheduler COM API as Standard User ---'
+          try {
+            `$service = New-Object -ComObject "Schedule.Service"
+            `$service.Connect()
+            `$folder = `$service.GetFolder("\")
+            `$task = `$service.NewTask(0)
+            `$task.RegistrationInfo.Description = "COM Standard User Test"
+            `$principal = `$task.Principal
+            `$principal.LogonType = 3 # TASK_LOGON_INTERACTIVE_TOKEN
+            `$principal.RunLevel = 0  # LeastPrivilege
+            
+            # Action
+            `$action = `$task.Actions.Create(0) # TASK_ACTION_EXEC
+            `$action.Path = "cmd.exe"
+            `$action.Arguments = "/c exit 0"
+            
+            # Trigger
+            `$trigger = `$task.Triggers.Create(1) # TASK_TRIGGER_TIME
+            `$trigger.StartBoundary = (Get-Date).AddMinutes(1).ToString("s")
+            
+            # Register in root folder
+            Write-Host "Calling RegisterTaskDefinition in root folder '\'..."
+            `$registeredTask = `$folder.RegisterTaskDefinition("StandardTestTaskCOM", `$task, 6, `$null, `$null, 3, `$null)
+            Write-Host "SUCCESS: Task registered via COM API! Name: `$(`$registeredTask.Name), State: `$(`$registeredTask.State)"
+            
+            # Delete task to clean up
+            `$folder.DeleteTask("StandardTestTaskCOM", 0)
+            Write-Host "SUCCESS: Task deleted via COM API!"
+          } catch {
+            Write-Host "COM API Root Folder Error: `$($_.Exception.Message) (HRESULT: `$(('0x{0:X}' -f `$_.Exception.HResult)))"
+          }
+
+          Write-Host '--- Testing Task Scheduler COM API in Subfolder ---'
+          try {
+            `$service = New-Object -ComObject "Schedule.Service"
+            `$service.Connect()
+            `$rootFolder = `$service.GetFolder("\")
+            # Try creating subfolder if root failed
+            `$subFolder = `$rootFolder.CreateFolder("CodexScheduler", `$null)
+            Write-Host "Subfolder created: `$(`$subFolder.Path)"
+            `$registeredTask = `$subFolder.RegisterTaskDefinition("StandardTestTaskCOM", `$task, 6, `$null, `$null, 3, `$null)
+            Write-Host "SUCCESS: Task registered in subfolder! State: `$(`$registeredTask.State)"
+          } catch {
+            Write-Host "COM API Subfolder Error: `$($_.Exception.Message) (HRESULT: `$(('0x{0:X}' -f `$_.Exception.HResult)))"
+          }
+
+          Write-Host '--- Testing codex-scheduler CLI ---'
+          & '$PWD\target\debug\codex-scheduler.exe' status --json
           "@
           Set-Content -Path "$PWD\run_as_standard.ps1" -Value $testScript
 
@@ -104,6 +139,7 @@ jobs:
           $pinfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PWD\run_as_standard.ps1`""
           $pinfo.UserName = "standarduser"
           $pinfo.Password = $secPassword
+          $pinfo.LoadUserProfile = $true
           $pinfo.UseShellExecute = $false
           $pinfo.RedirectStandardOutput = $true
           $pinfo.RedirectStandardError = $true

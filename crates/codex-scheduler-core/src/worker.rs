@@ -13,9 +13,17 @@ pub enum WorkerError {
 /// Returns the standard binary name for the worker CLI.
 pub fn worker_binary_name() -> &'static str {
     if cfg!(target_os = "windows") {
-        "codex-scheduler-cli.exe"
+        "codex-scheduler.exe"
     } else {
-        "codex-scheduler-cli"
+        "codex-scheduler"
+    }
+}
+
+pub fn candidate_worker_binary_names() -> &'static [&'static str] {
+    if cfg!(target_os = "windows") {
+        &["codex-scheduler.exe", "codex-scheduler-cli.exe"]
+    } else {
+        &["codex-scheduler", "codex-scheduler-cli"]
     }
 }
 
@@ -45,7 +53,12 @@ pub fn canonical_worker_path() -> PathBuf {
 
 /// Checks whether the worker CLI is already installed at the canonical path.
 pub fn is_worker_installed() -> bool {
-    canonical_worker_path().exists()
+    for name in candidate_worker_binary_names() {
+        if canonical_worker_dir().join(name).exists() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Searches for the worker CLI binary in:
@@ -54,74 +67,73 @@ pub fn is_worker_installed() -> bool {
 /// 3. Standard release/debug target directories (for development & testing)
 /// 4. System `PATH`
 pub fn find_bundled_worker_binary() -> Option<PathBuf> {
-    let bin_name = worker_binary_name();
-
-    // 1. Next to current executable
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let next_to_exe = parent.join(bin_name);
-            if next_to_exe.is_file() {
-                return Some(next_to_exe);
-            }
-
-            // 2. macOS bundle Resources
-            // Contents/MacOS/codex-scheduler -> Contents/Resources/codex-scheduler-cli
-            let resources_dir = parent.join("../Resources").join(bin_name);
-            if resources_dir.is_file() {
-                return Some(resources_dir);
-            }
-
-            let resources_bin = parent.join("../Resources/resources").join(bin_name);
-            if resources_bin.is_file() {
-                return Some(resources_bin);
-            }
-
-            // Also check `resources/` in parent (Windows or unpacked)
-            let res_sub = parent.join("resources").join(bin_name);
-            if res_sub.is_file() {
-                return Some(res_sub);
-            }
-
-            // Check ancestor target directories (development mode)
-            let mut cur = parent.to_path_buf();
-            for _ in 0..5 {
-                let target_rel = cur.join("target").join("release").join(bin_name);
-                if target_rel.is_file() {
-                    return Some(target_rel);
+    for &bin_name in candidate_worker_binary_names() {
+        // 1. Next to current executable
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                let next_to_exe = parent.join(bin_name);
+                if next_to_exe.is_file() {
+                    return Some(next_to_exe);
                 }
-                let target_deb = cur.join("target").join("debug").join(bin_name);
-                if target_deb.is_file() {
-                    return Some(target_deb);
+
+                // 2. macOS bundle Resources
+                let resources_dir = parent.join("../Resources").join(bin_name);
+                if resources_dir.is_file() {
+                    return Some(resources_dir);
                 }
-                if !cur.pop() {
-                    break;
+
+                let resources_bin = parent.join("../Resources/resources").join(bin_name);
+                if resources_bin.is_file() {
+                    return Some(resources_bin);
+                }
+
+                // Also check `resources/` in parent (Windows or unpacked)
+                let res_sub = parent.join("resources").join(bin_name);
+                if res_sub.is_file() {
+                    return Some(res_sub);
+                }
+
+                // Check ancestor target directories (development mode)
+                let mut cur = parent.to_path_buf();
+                for _ in 0..5 {
+                    let target_rel = cur.join("target").join("release").join(bin_name);
+                    if target_rel.is_file() {
+                        return Some(target_rel);
+                    }
+                    let target_deb = cur.join("target").join("debug").join(bin_name);
+                    if target_deb.is_file() {
+                        return Some(target_deb);
+                    }
+                    if !cur.pop() {
+                        break;
+                    }
                 }
             }
         }
-    }
 
-    // 3. Current working directory or target
-    for candidate in &[
-        PathBuf::from(bin_name),
-        PathBuf::from("target/release").join(bin_name),
-        PathBuf::from("target/debug").join(bin_name),
-        PathBuf::from("../target/release").join(bin_name),
-        PathBuf::from("../target/debug").join(bin_name),
-    ] {
-        if candidate.is_file() {
-            if let Ok(canon) = fs::canonicalize(candidate) {
-                return Some(canon);
+        // 3. Current working directory or target
+        for candidate in &[
+            PathBuf::from(bin_name),
+            PathBuf::from("target/release").join(bin_name),
+            PathBuf::from("target/debug").join(bin_name),
+            PathBuf::from("../target/release").join(bin_name),
+            PathBuf::from("../target/debug").join(bin_name),
+        ] {
+            if candidate.is_file() {
+                if let Ok(canon) = fs::canonicalize(candidate) {
+                    return Some(canon);
+                }
+                return Some(candidate.clone());
             }
-            return Some(candidate.clone());
         }
-    }
 
-    // 4. Search in PATH
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let full = dir.join(bin_name);
-            if full.is_file() {
-                return Some(full);
+        // 4. Search in PATH
+        if let Some(paths) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&paths) {
+                let full = dir.join(bin_name);
+                if full.is_file() {
+                    return Some(full);
+                }
             }
         }
     }
@@ -199,7 +211,9 @@ mod tests {
     #[test]
     fn test_worker_binary_name() {
         let name = worker_binary_name();
-        assert!(name.starts_with("codex-scheduler-cli"));
+        assert!(name.starts_with("codex-scheduler"));
+        let candidates = candidate_worker_binary_names();
+        assert!(candidates.contains(&name));
     }
 
     #[test]

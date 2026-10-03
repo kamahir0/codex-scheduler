@@ -49,10 +49,14 @@
 
 [GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) より、お使いのOSに合わせたインストーラをダウンロードしてください。
 
-| OS | アーキテクチャ | インストーラ |
-| :--- | :--- | :--- |
-| **macOS (Apple Silicon)** | M1 / M2 / M3 / M4 | `Codex-Scheduler-<version>-macos-arm64.dmg` |
-| **Windows** | 64-bit | `Codex-Scheduler-<version>-windows-x64.exe` |
+### 配布パッケージ一覧
+
+| 種別 | OS / アーキテクチャ | 配布ファイル | 用途 |
+| :--- | :--- | :--- | :--- |
+| **Desktop GUI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-<version>-macos-arm64.dmg` | GUIデスクトップアプリ |
+| **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ |
+| **Standalone CLI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLI実行ファイル (`codex-scheduler`) |
+| **Standalone CLI** | Windows (64-bit) | `Codex-Scheduler-CLI-<version>-windows-x64.exe` | 単体CLI実行ファイル (`codex-scheduler.exe`) |
 
 ### 前提条件
 本スケジューラはバックグラウンドで `codex` コマンドを実行します。端末に OpenAI Codex CLI がインストールされていることを確認してください。
@@ -74,7 +78,22 @@ codex --version
 > [!NOTE]
 > Microsoft Defender SmartScreen が表示された場合は、「詳細情報」をクリックしてから「実行」を選択してください。
 
-より詳しい権限仕様やバックグラウンドWorkerの仕組みについては [インストール & 権限セットアップガイド](docs/setup-guide.md) をご覧ください。
+### Standalone CLI の場合 (`codex-scheduler`)
+Releases からバイナリをダウンロードし、実行権限を付与して PATH の通った場所に配置します：
+```bash
+chmod +x Codex-Scheduler-CLI-*-macos-arm64
+mv Codex-Scheduler-CLI-*-macos-arm64 ~/.local/bin/codex-scheduler
+
+# ジョブの登録例
+codex-scheduler schedule --session-id "sess-123" --cwd "/path/to/project" --at "+120"
+
+# 一覧表示
+codex-scheduler list --json
+```
+
+※ Desktop アプリと CLI を同一環境に導入した場合でも、`~/.codex-scheduler/jobs.json` のジョブデータは共有され、macOS の常設スケジューラ（LaunchAgent）は常に1つに保たれます（Desktop所有が優先）。
+
+より詳しい権限仕様やセットアップ手順については [インストール & 権限セットアップガイド](docs/setup-guide.md) をご覧ください。
 
 ---
 

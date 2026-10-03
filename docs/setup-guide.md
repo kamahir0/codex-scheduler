@@ -8,10 +8,14 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
 
 [GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) の最新リリース（Latest Release）ページから、ご使用のOSに合ったインストーラをダウンロードします。
 
-| OS | アーキテクチャ | ダウンロードファイル |
-| :--- | :--- | :--- |
-| **macOS (Apple Silicon)** | M1 / M2 / M3 / M4 | `Codex-Scheduler-<version>-macos-arm64.dmg` |
-| **Windows** | 64-bit | `Codex-Scheduler-<version>-windows-x64.exe` |
+### 配布パッケージ一覧（4種類）
+
+| 種別 | OS / アーキテクチャ | ダウンロードファイル | 説明 |
+| :--- | :--- | :--- | :--- |
+| **Desktop GUI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-<version>-macos-arm64.dmg` | GUIデスクトップアプリ（単体で予約実行完結） |
+| **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ（単体で予約実行完結） |
+| **Standalone CLI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLI実行ファイル（GUI不要、単体で予約実行完結） |
+| **Standalone CLI** | Windows (64-bit) | `Codex-Scheduler-CLI-<version>-windows-x64.exe` | 単体CLI実行ファイル（GUI不要、単体で予約実行完結） |
 
 ---
 
@@ -76,3 +80,71 @@ codex --version
 
 もし「command not found」となる場合は、Codex のセットアップを確認し、シェル環境変数（PATH）に `codex` の実行パスが含まれていることを確認してください。
 （一般的な配置場所: `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.npm-global/bin` 等）
+
+---
+
+## 4. Standalone CLI (`codex-scheduler`) のセットアップ & 利用
+
+GUI不要の環境やCI/CD、スクリプト自動化向けに、単一バイナリの CLI ディストリビューションを提供しています。
+
+### インストール手順 (macOS)
+1. Releases から `Codex-Scheduler-CLI-<version>-macos-arm64` をダウンロードします。
+2. 実行権限を付与し、PATHの通った場所（例: `/usr/local/bin` や `~/.local/bin`）へ配置します：
+   ```bash
+   chmod +x Codex-Scheduler-CLI-*-macos-arm64
+   mv Codex-Scheduler-CLI-*-macos-arm64 ~/.local/bin/codex-scheduler
+   ```
+3. バージョンを確認します：
+   ```bash
+   codex-scheduler --version
+   ```
+
+### 主なコマンド
+- **ジョブの新規予約**:
+  ```bash
+  # 2時間後に再開
+  codex-scheduler schedule --session-id "sess-123" --cwd "/path/to/project" --at "+120"
+
+  # ISO 8601 時刻指定
+  codex-scheduler schedule --session-id "sess-123" --cwd "/path/to/project" --at "2026-10-04T02:00:00Z"
+  ```
+- **ジョブ一覧表示**:
+  ```bash
+  codex-scheduler list
+  codex-scheduler list --json
+  ```
+- **ジョブ詳細・履歴確認**:
+  ```bash
+  codex-scheduler show <job-id>
+  ```
+- **ジョブのキャンセル / 削除**:
+  ```bash
+  codex-scheduler cancel <job-id>
+  codex-scheduler delete <job-id>
+  ```
+- **システム & スケジューラステータス確認**:
+  ```bash
+  codex-scheduler status
+  codex-scheduler status --json
+  ```
+- **OSスケジューラ常設サービスの登録 / アンインストール**:
+  ```bash
+  codex-scheduler install-scheduler
+  codex-scheduler uninstall-scheduler
+  ```
+
+---
+
+## 5. Desktop と CLI の共存運用（所有権モデル）
+
+Desktop アプリと standalone CLI は、両方インストールされている環境でも安全に共存できます。
+
+- **共有ジョブストア**:
+  すべてのジョブデータは `~/.codex-scheduler/jobs.json` に保存され、Desktop と CLI のどちらから登録・確認・キャンセルしても即座に相互反映されます。
+- **単一スケジューラ常設サービス（Single Persistent Scheduler Invariant）**:
+  macOS の常設スケジューラ（LaunchAgent: `dev.codexscheduler.scheduler`）はシステム全体で常に1つだけ存在します。重複起動や二重登録は発生しません。
+- **Desktop 優先ルール（Ownership Priority）**:
+  1. Desktop アプリがインストールされている環境では、LaunchAgent は Desktop アプリ本体（Gatekeeper 承認済みのシングル実行ファイル）が所有します。
+  2. CLI 単体で先に利用していた環境（CLI 所有）に Desktop アプリを後からインストールして起動した場合、Desktop アプリが安全に所有権を引き継ぎ（Takeover）、Desktop アプリ経由でのヘッドレス定期実行へ自動移行します。
+  3. Desktop 所有時に CLI から `uninstall-scheduler` を実行しても、Desktop アプリの定期実行が不意に停止しないよう安全に保護されます（アンインストールは拒否され、エラーコード `desktop_owner_protected` が返されます）。
+

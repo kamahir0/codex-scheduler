@@ -2,6 +2,17 @@
 
 利用枠（Quota / Rate Limit）リセット時に自動でセッションを再開する、ローカルファーストのスケジュール管理デスクトップアプリケーション。
 
+<p align="left">
+  <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/Tauri_v2-24C8D8?style=flat-square&logo=tauri&logoColor=white" alt="Tauri v2" />
+  <img src="https://img.shields.io/badge/React_19-20232A?style=flat-square&logo=react&logoColor=61DAFB" alt="React 19" />
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/Ant_Design-0170FE?style=flat-square&logo=antdesign&logoColor=white" alt="Ant Design" />
+  <img src="https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS" />
+  <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows" />
+</p>
+
 ![Codex Scheduler メイン画面](docs/images/screenshot.png)
 
 普段CodexデスクトップアプリやCLIで開発している際、トークン利用制限（Rate Limit）に達して作業が中断してしまうことがあります。  
@@ -20,6 +31,17 @@
   リセット予定時刻の微小なズレ（数分の遅延）や一時的な利用制限超過（HTTP 429等）を自動判定。設定間隔（例: 5分おき）で成功するまで自動再試行します。
 - 🎨 **Ant Design による洗練されたモダンUI**  
   ダークモード／ライトモード切り替え、カウントダウンタイマー、直感的なジョブ登録モーダル、ターミナル風の実行履歴ログ表示を標準装備。
+
+---
+
+## 技術スタック
+
+| 分野 | 技術 |
+| :--- | :--- |
+| **バックエンド / コア** | [Rust](https://www.rust-lang.org/) / [Tauri v2](https://tauri.app/) |
+| **フロントエンド** | [React 19](https://react.dev/) / [TypeScript](https://www.typescriptlang.org/) / [Vite](https://vitejs.dev/) |
+| **UIコンポーネント** | [Ant Design 5](https://ant.design/) / [Lucide Icons](https://lucide.dev/) |
+| **OSスケジューラ** | macOS `launchd` (LaunchAgent) / Windows Task Scheduler |
 
 ---
 
@@ -53,29 +75,6 @@ codex --version
 > Microsoft Defender SmartScreen が表示された場合は、「詳細情報」をクリックしてから「実行」を選択してください。
 
 より詳しい権限仕様やバックグラウンドWorkerの仕組みについては [インストール & 権限セットアップガイド](docs/setup-guide.md) をご覧ください。
-
----
-
-## かんたんな使い方
-
-### 1. セッションIDを確認
-CodexデスクトップアプリやCLIで作業中、レート制限に達したら現在のセッションID（UUID）をコピーします。  
-（デスクトップアプリの画面上部や、CLIのセッション一覧から取得できます）
-
-### 2. ジョブを登録
-Codex Scheduler を開き、右上の **「+ 新規ジョブ登録」** をクリックします。
-- **セッションID**: コピーしたセッションIDを入力
-- **作業ディレクトリ**: プロジェクトのルートディレクトリを選択
-- **実行予定日時**: トークンリセット時刻（例: 深夜 02:00）を指定
-- **リトライ設定**: （任意）制限解除の遅延に備えてリトライ間隔と回数を指定
-
-### 3. あとは寝て待つだけ
-登録が完了したら、Codex Scheduler アプリを閉じて構いません。  
-指定時刻になると、OSスケジューラがバックグラウンドで Worker を呼び出し、セッションを再開します。
-
-### 4. 翌朝、作業の続きを確認
-翌朝デスクトップアプリやターミナルを開けば、夜間に実行されたタスクの成果がそのまま同一セッションに反映されています。  
-Codex Scheduler のログアイコンをクリックすれば、夜間の標準出力やエラーログも確認できます。
 
 ---
 

@@ -76,7 +76,7 @@ impl RetryEngine {
 mod tests {
     use super::*;
     use crate::models::{ExecutionAttempt, ProviderType, RetryPolicy};
-    use std::path::PathBuf;
+
 
     fn dummy_job() -> Job {
         Job::new(

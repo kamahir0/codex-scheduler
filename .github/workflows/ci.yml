@@ -54,83 +54,77 @@ jobs:
           cargo run -p codex-scheduler-cli -- uninstall-scheduler
           cargo run -p codex-scheduler-cli -- status --json
 
-      - name: Standard User Task Scheduler Empirical Verification
+      - name: Standard User Task Scheduler Acceptance Test
         shell: powershell
         run: |
-          Write-Host "=== 1. Creating standard user 'standarduser' ==="
+          Write-Host "=== 1. Creating non-admin user 'standarduser' ==="
           $pass = ConvertTo-SecureString "StdPass1234!" -AsPlainText -Force
-          New-LocalUser -Name "standarduser" -Password $pass -PasswordNeverExpires -Description "Standard Test User"
+          New-LocalUser -Name "standarduser" -Password $pass -PasswordNeverExpires -Description "Standard Non-Admin User"
           
           $adminMembers = Get-LocalGroupMember -Group "Administrators"
           Write-Host "Administrators members:"
           $adminMembers | ForEach-Object { $_.Name }
-          
-          $userMembers = Get-LocalGroupMember -Group "Users"
-          Write-Host "Users members:"
-          $userMembers | ForEach-Object { $_.Name }
+          if ($adminMembers.Name -contains "$env:COMPUTERNAME\standarduser") {
+            Write-Error "FATAL: standarduser MUST NOT be in Administrators group!"
+            exit 1
+          }
 
           Write-Host "=== 2. Granting directory access to standarduser ==="
           icacls target /grant "standarduser:(OI)(CI)RX" /T | Out-Null
           icacls . /grant "standarduser:(OI)(CI)RX" /T | Out-Null
 
-          Write-Host "=== 3. Testing schtasks /Create as standarduser via ProcessStartInfo ==="
+          Write-Host "=== 3. Running standard-user acceptance test script ==="
           $secPassword = ConvertTo-SecureString "StdPass1234!" -AsPlainText -Force
           
-          # Test script to run as standard user
+          # Test script to run in standard user security context
           $testScript = @"
+          `$ErrorActionPreference = 'Stop'
           Write-Host '--- Current Identity ---'
           whoami
           whoami /groups
           Write-Host 'USERPROFILE:' `$env:USERPROFILE
 
-          Write-Host '--- Testing Task Scheduler COM API as Standard User ---'
-          try {
-            `$service = New-Object -ComObject "Schedule.Service"
-            `$service.Connect()
-            `$folder = `$service.GetFolder("\")
-            `$task = `$service.NewTask(0)
-            `$task.RegistrationInfo.Description = "COM Standard User Test"
-            `$principal = `$task.Principal
-            `$principal.LogonType = 3 # TASK_LOGON_INTERACTIVE_TOKEN
-            `$principal.RunLevel = 0  # LeastPrivilege
-            
-            # Action
-            `$action = `$task.Actions.Create(0) # TASK_ACTION_EXEC
-            `$action.Path = "cmd.exe"
-            `$action.Arguments = "/c exit 0"
-            
-            # Trigger
-            `$trigger = `$task.Triggers.Create(1) # TASK_TRIGGER_TIME
-            `$trigger.StartBoundary = (Get-Date).AddMinutes(1).ToString("s")
-            
-            # Register in root folder
-            Write-Host "Calling RegisterTaskDefinition in root folder '\'..."
-            `$registeredTask = `$folder.RegisterTaskDefinition("StandardTestTaskCOM", `$task, 6, `$null, `$null, 3, `$null)
-            Write-Host "SUCCESS: Task registered via COM API! Name: `$(`$registeredTask.Name), State: `$(`$registeredTask.State)"
-            
-            # Delete task to clean up
-            `$folder.DeleteTask("StandardTestTaskCOM", 0)
-            Write-Host "SUCCESS: Task deleted via COM API!"
-          } catch {
-            Write-Host "COM API Root Folder Error: `$($_.Exception.Message) (HRESULT: `$(('0x{0:X}' -f `$_.Exception.HResult)))"
+          Write-Host '--- 1. Initial Status (should be uninstalled) ---'
+          `$initialStatus = & '$PWD\target\debug\codex-scheduler.exe' status --json | ConvertFrom-Json
+          if (`$initialStatus.scheduler.installed -ne `$false -or `$initialStatus.scheduler.ready -ne `$false) {
+            Write-Error "Expected scheduler to be uninstalled initially, got: `$(`$initialStatus | ConvertTo-Json -Compress)"
+            exit 1
           }
+          Write-Host 'PASS: Initial status is uninstalled.'
 
-          Write-Host '--- Testing Task Scheduler COM API in Subfolder ---'
-          try {
-            `$service = New-Object -ComObject "Schedule.Service"
-            `$service.Connect()
-            `$rootFolder = `$service.GetFolder("\")
-            # Try creating subfolder if root failed
-            `$subFolder = `$rootFolder.CreateFolder("CodexScheduler", `$null)
-            Write-Host "Subfolder created: `$(`$subFolder.Path)"
-            `$registeredTask = `$subFolder.RegisterTaskDefinition("StandardTestTaskCOM", `$task, 6, `$null, `$null, 3, `$null)
-            Write-Host "SUCCESS: Task registered in subfolder! State: `$(`$registeredTask.State)"
-          } catch {
-            Write-Host "COM API Subfolder Error: `$($_.Exception.Message) (HRESULT: `$(('0x{0:X}' -f `$_.Exception.HResult)))"
+          Write-Host '--- 2. Install Scheduler as Standard User (COM API) ---'
+          & '$PWD\target\debug\codex-scheduler.exe' install-scheduler
+          if (`$LASTEXITCODE -ne 0) {
+            Write-Error "install-scheduler failed with exit code `$LASTEXITCODE"
+            exit 1
           }
+          Write-Host 'PASS: install-scheduler succeeded.'
 
-          Write-Host '--- Testing codex-scheduler CLI ---'
-          & '$PWD\target\debug\codex-scheduler.exe' status --json
+          Write-Host '--- 3. Verify Status after Install ---'
+          `$postInstallStatus = & '$PWD\target\debug\codex-scheduler.exe' status --json | ConvertFrom-Json
+          if (`$postInstallStatus.scheduler.installed -ne `$true -or `$postInstallStatus.scheduler.ready -ne `$true -or `$postInstallStatus.scheduler.owner -ne 'cli') {
+            Write-Error "Expected scheduler to be installed/ready/cli, got: `$(`$postInstallStatus | ConvertTo-Json -Compress)"
+            exit 1
+          }
+          Write-Host 'PASS: Scheduler verified as installed, ready, and owned by cli.'
+
+          Write-Host '--- 4. Uninstall Scheduler as Standard User ---'
+          & '$PWD\target\debug\codex-scheduler.exe' uninstall-scheduler
+          if (`$LASTEXITCODE -ne 0) {
+            Write-Error "uninstall-scheduler failed with exit code `$LASTEXITCODE"
+            exit 1
+          }
+          Write-Host 'PASS: uninstall-scheduler succeeded.'
+
+          Write-Host '--- 5. Verify Status after Uninstall ---'
+          `$postUninstallStatus = & '$PWD\target\debug\codex-scheduler.exe' status --json | ConvertFrom-Json
+          if (`$postUninstallStatus.scheduler.installed -ne `$false -or `$postUninstallStatus.scheduler.ready -ne `$false -or `$postUninstallStatus.scheduler.owner -ne 'none') {
+            Write-Error "Expected scheduler to be uninstalled, got: `$(`$postUninstallStatus | ConvertTo-Json -Compress)"
+            exit 1
+          }
+          Write-Host 'PASS: Scheduler successfully uninstalled.'
+
+          Write-Host '=== ALL STANDARD USER ACCEPTANCE CHECKS PASSED ==='
           "@
           Set-Content -Path "$PWD\run_as_standard.ps1" -Value $testScript
 
@@ -145,19 +139,23 @@ jobs:
           $pinfo.RedirectStandardError = $true
           $pinfo.WorkingDirectory = "$PWD"
 
-          try {
-            $process = [System.Diagnostics.Process]::Start($pinfo)
-            $stdout = $process.StandardOutput.ReadToEnd()
-            $stderr = $process.StandardError.ReadToEnd()
-            $process.WaitForExit()
-            Write-Host "=== Standard User Execution Output ==="
-            Write-Host "ExitCode: $($process.ExitCode)"
-            Write-Host "STDOUT:"
-            Write-Host $stdout
+          $process = [System.Diagnostics.Process]::Start($pinfo)
+          $stdout = $process.StandardOutput.ReadToEnd()
+          $stderr = $process.StandardError.ReadToEnd()
+          $process.WaitForExit()
+
+          Write-Host "Standard User Process ExitCode: $($process.ExitCode)"
+          Write-Host "STDOUT:"
+          Write-Host $stdout
+          if ($stderr) {
             Write-Host "STDERR:"
             Write-Host $stderr
-          } catch {
-            Write-Host "Process start error: $_"
           }
+
+          if ($process.ExitCode -ne 0) {
+            Write-Error "Standard user acceptance test failed with exit code $($process.ExitCode)"
+            exit 1
+          }
+
 
 

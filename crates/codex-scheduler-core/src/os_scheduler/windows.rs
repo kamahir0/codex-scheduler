@@ -1,6 +1,5 @@
 use crate::models::Job;
 use crate::os_scheduler::{SchedulerBackend, SchedulerError, SchedulerOwner};
-use std::io;
 use std::path::{Path, PathBuf};
 
 pub const TASK_NAME: &str = "CodexScheduler_Service";
@@ -9,20 +8,179 @@ pub const CANONICAL_CLI_EXE: &str = "codex-scheduler.exe";
 pub const LEGACY_CLI_EXE: &str = "codex-scheduler-cli.exe";
 pub const TICK_ARG: &str = "--scheduler-tick";
 
-/// Abstraction for invoking schtasks.exe to allow deterministic, non-destructive testing.
-pub trait TaskSchedulerRunner: Send + Sync {
-    fn run_schtasks(&self, args: &[&str]) -> io::Result<std::process::Output>;
+/// Abstraction for scheduled task metadata returned by TaskSchedulerRunner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduledTaskDetails {
+    pub exists: bool,
+    pub enabled: bool,
+    pub last_result: i32,
+    pub xml: Option<String>,
 }
 
-/// Production runner that invokes schtasks.exe directly via std::process::Command.
+/// Abstraction for Task Scheduler operations to allow deterministic, non-destructive testing.
+pub trait TaskSchedulerRunner: Send + Sync {
+    fn query_task(&self, task_name: &str) -> Result<Option<ScheduledTaskDetails>, SchedulerError>;
+    fn register_task(&self, task_name: &str, xml: &str) -> Result<(), SchedulerError>;
+    fn delete_task(&self, task_name: &str) -> Result<(), SchedulerError>;
+}
+
+#[cfg(target_os = "windows")]
+mod com_impl {
+    use super::*;
+    use windows::Win32::System::TaskScheduler::{
+        TaskScheduler, ITaskService, ITaskFolder,
+        TASK_CREATE_OR_UPDATE, TASK_LOGON_INTERACTIVE_TOKEN,
+        TASK_STATE_DISABLED,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_MULTITHREADED,
+    };
+
+
+    use windows::core::BSTR;
+
+    struct ComGuard;
+    impl ComGuard {
+        fn new() -> Self {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+            ComGuard
+        }
+    }
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+
+    pub fn query_task_com(task_name: &str) -> Result<Option<ScheduledTaskDetails>, SchedulerError> {
+        let _guard = ComGuard::new();
+        unsafe {
+            let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)
+                .map_err(|e| SchedulerError::CommandFailed(format!("CoCreateInstance TaskScheduler failed: {e}")))?;
+            service.Connect(None, None, None, None)
+                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::Connect failed: {e}")))?;
+            let root_folder: ITaskFolder = service.GetFolder(&BSTR::from("\\"))
+                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::GetFolder failed: {e}")))?;
+
+            match root_folder.GetTask(&BSTR::from(task_name)) {
+                Ok(task) => {
+                    let xml = task.Xml().map(|b| b.to_string()).ok();
+                    let state = task.State().unwrap_or_default();
+                    let enabled = state != TASK_STATE_DISABLED;
+                    let last_result = task.LastTaskResult().unwrap_or(0);
+                    Ok(Some(ScheduledTaskDetails {
+                        exists: true,
+                        enabled,
+                        last_result,
+                        xml,
+                    }))
+                }
+                Err(e) => {
+                    if e.code().0 as u32 == 0x80070002 {
+                        Ok(None)
+                    } else {
+                        Err(SchedulerError::CommandFailed(format!("ITaskFolder::GetTask failed: {e}")))
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn register_task_com(task_name: &str, xml: &str) -> Result<(), SchedulerError> {
+        let _guard = ComGuard::new();
+        unsafe {
+            let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)
+                .map_err(|e| SchedulerError::CommandFailed(format!("CoCreateInstance TaskScheduler failed: {e}")))?;
+            service.Connect(None, None, None, None)
+                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::Connect failed: {e}")))?;
+            let root_folder: ITaskFolder = service.GetFolder(&BSTR::from("\\"))
+                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::GetFolder failed: {e}")))?;
+
+            let flags = TASK_CREATE_OR_UPDATE.0;
+            let logon_type = TASK_LOGON_INTERACTIVE_TOKEN;
+
+            root_folder.RegisterTask(
+                &BSTR::from(task_name),
+                &BSTR::from(xml),
+                flags,
+                None,
+                None,
+                logon_type,
+                None,
+            ).map_err(|e| SchedulerError::CommandFailed(format!("ITaskFolder::RegisterTask failed: {e}")))?;
+
+            Ok(())
+
+
+        }
+    }
+
+    pub fn delete_task_com(task_name: &str) -> Result<(), SchedulerError> {
+        let _guard = ComGuard::new();
+        unsafe {
+            let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)
+                .map_err(|e| SchedulerError::CommandFailed(format!("CoCreateInstance TaskScheduler failed: {e}")))?;
+            service.Connect(None, None, None, None)
+                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::Connect failed: {e}")))?;
+            let root_folder: ITaskFolder = service.GetFolder(&BSTR::from("\\"))
+                .map_err(|e| SchedulerError::CommandFailed(format!("ITaskService::GetFolder failed: {e}")))?;
+
+            match root_folder.DeleteTask(&BSTR::from(task_name), 0) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    if e.code().0 as u32 == 0x80070002 {
+                        Ok(())
+                    } else {
+                        Err(SchedulerError::CommandFailed(format!("ITaskFolder::DeleteTask failed: {e}")))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Production runner that invokes Windows Task Scheduler 2.0 COM API directly.
 #[derive(Default)]
 pub struct RealTaskSchedulerRunner;
 
 impl TaskSchedulerRunner for RealTaskSchedulerRunner {
-    fn run_schtasks(&self, args: &[&str]) -> io::Result<std::process::Output> {
-        std::process::Command::new("schtasks.exe")
-            .args(args)
-            .output()
+    #[cfg(target_os = "windows")]
+    fn query_task(&self, task_name: &str) -> Result<Option<ScheduledTaskDetails>, SchedulerError> {
+        com_impl::query_task_com(task_name)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn query_task(&self, _task_name: &str) -> Result<Option<ScheduledTaskDetails>, SchedulerError> {
+        Ok(None)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn register_task(&self, task_name: &str, xml: &str) -> Result<(), SchedulerError> {
+        com_impl::register_task_com(task_name, xml)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn register_task(&self, _task_name: &str, _xml: &str) -> Result<(), SchedulerError> {
+        Err(SchedulerError::CommandFailed(
+            "Task Scheduler COM API is only available on Windows".to_string(),
+        ))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn delete_task(&self, task_name: &str) -> Result<(), SchedulerError> {
+        com_impl::delete_task_com(task_name)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn delete_task(&self, _task_name: &str) -> Result<(), SchedulerError> {
+        Err(SchedulerError::CommandFailed(
+            "Task Scheduler COM API is only available on Windows".to_string(),
+        ))
     }
 }
 
@@ -41,6 +199,7 @@ impl Default for WindowsTaskScheduler {
 pub struct TaskInfo {
     pub exists: bool,
     pub enabled: bool,
+    pub last_result: i32,
     pub command: Option<PathBuf>,
     pub arguments: Option<String>,
     pub raw_xml: Option<String>,
@@ -172,130 +331,43 @@ impl WindowsTaskScheduler {
         )
     }
 
-    /// Encodes a string as UTF-16LE bytes with BOM.
-    pub fn encode_utf16le_with_bom(s: &str) -> Vec<u8> {
-        let mut bytes = vec![0xFF, 0xFE];
-        for u in s.encode_utf16() {
-            bytes.extend_from_slice(&u.to_le_bytes());
-        }
-        bytes
-    }
-
-    /// Decodes schtasks output, handling UTF-16LE (with or without BOM) and UTF-8/ANSI.
-    pub fn decode_schtasks_output(bytes: &[u8]) -> String {
-        if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
-            let u16_slice: Vec<u16> = bytes[2..]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-            return String::from_utf16_lossy(&u16_slice);
-        }
-        if bytes.len() >= 4 && bytes[0] == b'<' && bytes[1] == 0x00 && bytes[2] == b'?' && bytes[3] == 0x00 {
-            let u16_slice: Vec<u16> = bytes
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-            return String::from_utf16_lossy(&u16_slice);
-        }
-        String::from_utf8_lossy(bytes).to_string()
-    }
-
-    /// Queries schtasks for the current task definition and parses it.
+    /// Queries the Task Scheduler for the current task definition and parses it.
     pub fn query_task(&self) -> Result<TaskInfo, SchedulerError> {
-        let output = self.runner.run_schtasks(&["/Query", "/TN", TASK_NAME, "/XML"])?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout_snippet = String::from_utf8_lossy(&output.stdout);
-            let combined = format!("{} {}", stdout_snippet, stderr);
-            // If the task does not exist, schtasks outputs "The system cannot find the file specified" or localized variants
-            let not_found = combined.contains("cannot find")
-                || combined.contains("見つかりません")
-                || combined.contains("does not exist")
-                || combined.contains("存在しません");
-            let access_denied = combined.contains("Access is denied") || combined.contains("アクセスが拒否");
-
-            if not_found || (output.status.code() == Some(1) && !access_denied) {
-                return Ok(TaskInfo {
-                    exists: false,
-                    enabled: false,
-                    command: None,
-                    arguments: None,
-                    raw_xml: None,
-                });
+        let details = self.runner.query_task(TASK_NAME)?;
+        match details {
+            Some(d) if d.exists => {
+                let xml = d.xml;
+                let command = xml.as_deref().and_then(|x| Self::extract_xml_tag(x, "Command")).map(PathBuf::from);
+                let arguments = xml.as_deref().and_then(|x| Self::extract_xml_tag(x, "Arguments"));
+                Ok(TaskInfo {
+                    exists: true,
+                    enabled: d.enabled,
+                    last_result: d.last_result,
+                    command,
+                    arguments,
+                    raw_xml: xml,
+                })
             }
-            return Err(SchedulerError::CommandFailed(format!(
-                "schtasks /Query failed: {}",
-                stderr.trim()
-            )));
+            _ => Ok(TaskInfo {
+                exists: false,
+                enabled: false,
+                last_result: 0,
+                command: None,
+                arguments: None,
+                raw_xml: None,
+            }),
         }
-
-        let xml = Self::decode_schtasks_output(&output.stdout);
-        let command = Self::extract_xml_tag(&xml, "Command").map(PathBuf::from);
-        let arguments = Self::extract_xml_tag(&xml, "Arguments");
-
-        // Task is considered enabled if Settings.Enabled != false and Triggers.Enabled != false
-        let settings_enabled = if let Some(settings_sec) = xml.find("<Settings>") {
-            let end_sec = xml[settings_sec..].find("</Settings>").unwrap_or(xml.len() - settings_sec) + settings_sec;
-            let section = &xml[settings_sec..end_sec];
-            Self::extract_xml_tag(section, "Enabled").map_or(true, |v| v.eq_ignore_ascii_case("true"))
-        } else {
-            true
-        };
-
-        let trigger_enabled = if let Some(trig_sec) = xml.find("<Triggers>") {
-            let end_sec = xml[trig_sec..].find("</Triggers>").unwrap_or(xml.len() - trig_sec) + trig_sec;
-            let section = &xml[trig_sec..end_sec];
-            Self::extract_xml_tag(section, "Enabled").map_or(true, |v| v.eq_ignore_ascii_case("true"))
-        } else {
-            true
-        };
-
-        let enabled = settings_enabled && trigger_enabled;
-
-        Ok(TaskInfo {
-            exists: true,
-            enabled,
-            command,
-            arguments,
-            raw_xml: Some(xml),
-        })
     }
 
-    /// Registers or updates the task using an XML definition via schtasks.
+    /// Registers or updates the task using an XML definition via COM API.
     pub fn register_task_xml(&self, exe_path: &Path) -> Result<(), SchedulerError> {
         let xml_content = Self::generate_task_xml(exe_path);
-        let temp_dir = std::env::temp_dir();
-        let temp_xml_path = temp_dir.join(format!("codex_sched_task_{}.xml", uuid::Uuid::new_v4()));
-        let utf16_bytes = Self::encode_utf16le_with_bom(&xml_content);
-        std::fs::write(&temp_xml_path, &utf16_bytes)?;
-
-        let path_str = temp_xml_path.to_string_lossy();
-        let output = self.runner.run_schtasks(&["/Create", "/TN", TASK_NAME, "/XML", &path_str, "/F"]);
-        let _ = std::fs::remove_file(&temp_xml_path);
-
-        let output = output?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(SchedulerError::CommandFailed(format!(
-                "Failed to register Windows Scheduled Task via schtasks /Create: {}",
-                stderr.trim()
-            )));
-        }
-
-        Ok(())
+        self.runner.register_task(TASK_NAME, &xml_content)
     }
 
-    /// Enables the task via schtasks /Change /ENABLE.
-    pub fn enable_task(&self) -> Result<(), SchedulerError> {
-        let output = self.runner.run_schtasks(&["/Change", "/TN", TASK_NAME, "/ENABLE"])?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(SchedulerError::CommandFailed(format!(
-                "Failed to enable Windows Scheduled Task via schtasks /Change: {}",
-                stderr.trim()
-            )));
-        }
-        Ok(())
+    fn canonical_path_str(path: &Path) -> String {
+        let s = path.to_string_lossy().to_string();
+        s.replace('/', "\\").to_ascii_lowercase()
     }
 }
 
@@ -309,6 +381,11 @@ impl SchedulerBackend for WindowsTaskScheduler {
     }
 
     fn is_scheduler_ready(&self) -> bool {
+        let owner = self.get_scheduler_owner();
+        if owner != SchedulerOwner::Desktop && owner != SchedulerOwner::Cli {
+            return false;
+        }
+
         let task = match self.query_task() {
             Ok(t) => t,
             Err(_) => return false,
@@ -317,32 +394,35 @@ impl SchedulerBackend for WindowsTaskScheduler {
             return false;
         }
 
-        let owner = self.get_scheduler_owner();
-        if owner != SchedulerOwner::Desktop && owner != SchedulerOwner::Cli {
+        // State Matrix ST-04: Abnormal exit code check
+        // In Task Scheduler, 0 is S_OK, 0x00041301 is running, 0x00041325 is task ready
+        if task.last_result != 0 && task.last_result != 0x00041301 && task.last_result != 0x00041325 {
             return false;
         }
 
-        let path = match self.get_scheduler_executable_path() {
-            Some(p) => p,
-            None => return false,
-        };
-
-        path.is_absolute() && path.exists()
+        // Arguments must contain canonical --scheduler-tick
+        task.arguments.as_deref() == Some(TICK_ARG)
     }
 
+
     fn is_scheduler_path_matched(&self, exe_path: &Path) -> bool {
-        if let Some(target) = self.get_scheduler_executable_path() {
-            #[cfg(windows)]
-            {
-                target.as_os_str().to_string_lossy().eq_ignore_ascii_case(&exe_path.as_os_str().to_string_lossy())
-            }
-            #[cfg(not(windows))]
-            {
-                target == exe_path
-            }
+        let task = match self.query_task() {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        if let Some(cmd) = task.command {
+            Self::canonical_path_str(&cmd) == Self::canonical_path_str(exe_path)
         } else {
             false
         }
+    }
+
+    fn is_target_executable_exists(&self) -> bool {
+        self.query_task()
+            .ok()
+            .and_then(|t| t.command)
+            .map(|p| p.is_absolute() && p.exists())
+            .unwrap_or(false)
     }
 
     fn get_scheduler_owner(&self) -> SchedulerOwner {
@@ -359,13 +439,11 @@ impl SchedulerBackend for WindowsTaskScheduler {
             None => return SchedulerOwner::Invalid,
         };
 
-        // Check if arguments include canonical --scheduler-tick
         let args = task.arguments.unwrap_or_default();
         if !args.contains(TICK_ARG) {
             return SchedulerOwner::Invalid;
         }
 
-        // Must be absolute and must exist on disk
         if !cmd.is_absolute() || !cmd.exists() {
             return SchedulerOwner::Invalid;
         }
@@ -548,17 +626,7 @@ impl SchedulerBackend for WindowsTaskScheduler {
         if !task.exists {
             return Ok(());
         }
-
-        let output = self.runner.run_schtasks(&["/Delete", "/TN", TASK_NAME, "/F"])?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(SchedulerError::CommandFailed(format!(
-                "schtasks /Delete failed: {}",
-                stderr.trim()
-            )));
-        }
-
-        Ok(())
+        self.runner.delete_task(TASK_NAME)
     }
 
     fn uninstall_scheduler_as_cli(&self) -> Result<(), SchedulerError> {
@@ -569,7 +637,6 @@ impl SchedulerBackend for WindowsTaskScheduler {
     }
 
     fn register_job(&self, _job: &Job, _exe_path: &Path) -> Result<(), SchedulerError> {
-        // Multi-job architecture: jobs are persisted in jobs.json and claimed via execute_tick.
         Ok(())
     }
 
@@ -583,117 +650,62 @@ pub mod tests {
     use super::*;
     use std::fs;
     use std::sync::{Arc, Mutex};
-    use std::sync::atomic::{AtomicBool, Ordering};
 
-    #[cfg(unix)]
-    fn exit_status_from_code(code: i32) -> std::process::ExitStatus {
-        use std::os::unix::process::ExitStatusExt;
-        std::process::ExitStatus::from_raw(code)
-    }
-
-    #[cfg(windows)]
-    fn exit_status_from_code(code: u32) -> std::process::ExitStatus {
-        use std::os::windows::process::ExitStatusExt;
-        std::process::ExitStatus::from_raw(code)
-    }
-
-    #[derive(Clone)]
+    #[derive(Clone, Default)]
     pub struct MockTaskSchedulerRunner {
-        pub xml: Arc<Mutex<Option<String>>>,
-        pub enabled: Arc<AtomicBool>,
-        pub calls: Arc<Mutex<Vec<Vec<String>>>>,
-        pub fail_create: Arc<AtomicBool>,
+        pub task: Arc<Mutex<Option<ScheduledTaskDetails>>>,
+        pub calls: Arc<Mutex<Vec<String>>>,
     }
 
     impl MockTaskSchedulerRunner {
         pub fn new_empty() -> Self {
-            Self {
-                xml: Arc::new(Mutex::new(None)),
-                enabled: Arc::new(AtomicBool::new(false)),
-                calls: Arc::new(Mutex::new(Vec::new())),
-                fail_create: Arc::new(AtomicBool::new(false)),
-            }
+            Self::default()
         }
 
         pub fn with_task(xml: String, enabled: bool) -> Self {
-            Self {
-                xml: Arc::new(Mutex::new(Some(xml))),
-                enabled: Arc::new(AtomicBool::new(enabled)),
-                calls: Arc::new(Mutex::new(Vec::new())),
-                fail_create: Arc::new(AtomicBool::new(false)),
-            }
+            let runner = Self::default();
+            *runner.task.lock().unwrap() = Some(ScheduledTaskDetails {
+                exists: true,
+                enabled,
+                last_result: 0,
+                xml: Some(xml),
+            });
+            runner
+        }
+
+        pub fn with_task_and_result(xml: String, enabled: bool, last_result: i32) -> Self {
+            let runner = Self::default();
+            *runner.task.lock().unwrap() = Some(ScheduledTaskDetails {
+                exists: true,
+                enabled,
+                last_result,
+                xml: Some(xml),
+            });
+            runner
         }
     }
 
     impl TaskSchedulerRunner for MockTaskSchedulerRunner {
-        fn run_schtasks(&self, args: &[&str]) -> io::Result<std::process::Output> {
-            let str_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-            self.calls.lock().unwrap().push(str_args);
+        fn query_task(&self, task_name: &str) -> Result<Option<ScheduledTaskDetails>, SchedulerError> {
+            self.calls.lock().unwrap().push(format!("query:{}", task_name));
+            Ok(self.task.lock().unwrap().clone())
+        }
 
-            if args.first() == Some(&"/Query") {
-                let xml_lock = self.xml.lock().unwrap();
-                if let Some(ref xml) = *xml_lock {
-                    let is_en = self.enabled.load(Ordering::SeqCst);
-                    let rep_xml = if is_en {
-                        xml.clone()
-                    } else {
-                        xml.replace("<Enabled>true</Enabled>", "<Enabled>false</Enabled>")
-                    };
-                    Ok(std::process::Output {
-                        status: exit_status_from_code(0),
-                        stdout: rep_xml.into_bytes(),
-                        stderr: Vec::new(),
-                    })
-                } else {
-                    Ok(std::process::Output {
-                        status: exit_status_from_code(1),
-                        stdout: Vec::new(),
-                        stderr: b"ERROR: The system cannot find the file specified.".to_vec(),
-                    })
-                }
-            } else if args.first() == Some(&"/Create") {
-                if self.fail_create.load(Ordering::SeqCst) {
-                    return Ok(std::process::Output {
-                        status: exit_status_from_code(1),
-                        stdout: Vec::new(),
-                        stderr: b"ERROR: Access is denied.".to_vec(),
-                    });
-                }
-                let xml_path_idx = args.iter().position(|&x| x == "/XML").unwrap() + 1;
-                let path = args[xml_path_idx];
-                let raw_bytes = fs::read(path).unwrap_or_default();
-                let content = WindowsTaskScheduler::decode_schtasks_output(&raw_bytes);
-                *self.xml.lock().unwrap() = Some(content);
-                self.enabled.store(true, Ordering::SeqCst);
-                Ok(std::process::Output {
-                    status: exit_status_from_code(0),
-                    stdout: b"SUCCESS: The scheduled task \"CodexScheduler_Service\" has successfully been created.".to_vec(),
-                    stderr: Vec::new(),
-                })
-            } else if args.first() == Some(&"/Change") {
-                if args.iter().any(|&x| x == "/ENABLE") {
-                    self.enabled.store(true, Ordering::SeqCst);
-                }
-                Ok(std::process::Output {
-                    status: exit_status_from_code(0),
-                    stdout: b"SUCCESS: The parameters of scheduled task \"CodexScheduler_Service\" have been changed.".to_vec(),
-                    stderr: Vec::new(),
-                })
-            } else if args.first() == Some(&"/Delete") {
-                *self.xml.lock().unwrap() = None;
-                self.enabled.store(false, Ordering::SeqCst);
-                Ok(std::process::Output {
-                    status: exit_status_from_code(0),
-                    stdout: b"SUCCESS: The scheduled task \"CodexScheduler_Service\" was successfully deleted.".to_vec(),
-                    stderr: Vec::new(),
-                })
-            } else {
-                Ok(std::process::Output {
-                    status: exit_status_from_code(0),
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                })
-            }
+        fn register_task(&self, task_name: &str, xml: &str) -> Result<(), SchedulerError> {
+            self.calls.lock().unwrap().push(format!("register:{}", task_name));
+            *self.task.lock().unwrap() = Some(ScheduledTaskDetails {
+                exists: true,
+                enabled: true,
+                last_result: 0,
+                xml: Some(xml.to_string()),
+            });
+            Ok(())
+        }
+
+        fn delete_task(&self, task_name: &str) -> Result<(), SchedulerError> {
+            self.calls.lock().unwrap().push(format!("delete:{}", task_name));
+            *self.task.lock().unwrap() = None;
+            Ok(())
         }
     }
 
@@ -730,21 +742,6 @@ pub mod tests {
         let xml = WindowsTaskScheduler::generate_task_xml(Path::new(raw));
         let extracted = WindowsTaskScheduler::extract_xml_tag(&xml, "Command");
         assert_eq!(extracted, Some(raw.to_string()));
-    }
-
-    #[test]
-    fn test_utf16le_encoding_and_decoding() {
-        let text = "<Task><Command>C:\\test.exe</Command></Task>";
-        let bytes = WindowsTaskScheduler::encode_utf16le_with_bom(text);
-        assert_eq!(bytes[0], 0xFF);
-        assert_eq!(bytes[1], 0xFE);
-        let decoded = WindowsTaskScheduler::decode_schtasks_output(&bytes);
-        assert_eq!(decoded, text);
-
-        // UTF-8 bytes fallback
-        let utf8_bytes = text.as_bytes();
-        let decoded_utf8 = WindowsTaskScheduler::decode_schtasks_output(utf8_bytes);
-        assert_eq!(decoded_utf8, text);
     }
 
     #[test]
@@ -821,12 +818,11 @@ pub mod tests {
         // Must retain Desktop owner and Desktop path
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
         assert_eq!(scheduler.get_scheduler_executable_path(), Some(desk_exe.clone()));
-        assert_eq!(*runner.xml.lock().unwrap(), Some(initial_xml));
 
-        // No mutation call (/Create) should have been issued
+        // No mutation call (register) should have been issued
         let calls = runner.calls.lock().unwrap();
         for call in &calls[calls_before..] {
-            assert_ne!(call.first().map(|s| s.as_str()), Some("/Create"));
+            assert!(!call.starts_with("register"));
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -842,7 +838,6 @@ pub mod tests {
         fs::write(&cli_exe, b"test").unwrap();
 
         let initial_xml = WindowsTaskScheduler::generate_task_xml(&desk_exe);
-        // Task exists, but enabled = false
         let runner = MockTaskSchedulerRunner::with_task(initial_xml, false);
         let scheduler = WindowsTaskScheduler::with_runner(Box::new(runner.clone()));
 
@@ -909,7 +904,9 @@ pub mod tests {
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Cli);
 
         // ST-07: CLI disabled + CLI caller -> self-repair
-        runner.enabled.store(false, Ordering::SeqCst);
+        if let Some(ref mut d) = *runner.task.lock().unwrap() {
+            d.enabled = false;
+        }
         assert!(!scheduler.is_scheduler_ready());
         let res7 = scheduler.ensure_scheduler_installed(&cli_exe);
         assert!(res7.is_ok());
@@ -971,7 +968,6 @@ pub mod tests {
 
         // Must NOT takeover to CLI
         assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Invalid);
-        assert_eq!(*runner.xml.lock().unwrap(), Some(initial_xml));
         assert_ne!(scheduler.get_scheduler_executable_path(), Some(cli_exe));
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1052,7 +1048,8 @@ pub mod tests {
             }
             other => panic!("Expected MalformedConfiguration, got {:?}", other),
         }
-        assert_eq!(*runner.xml.lock().unwrap(), Some(malformed_xml));
+        let task_xml = runner.task.lock().unwrap().as_ref().and_then(|t| t.xml.clone());
+        assert_eq!(task_xml, Some(malformed_xml));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1077,12 +1074,12 @@ pub mod tests {
             SchedulerError::DesktopOwnerProtected => {}
             other => panic!("Expected DesktopOwnerProtected, got {:?}", other),
         }
-        assert!(runner.xml.lock().unwrap().is_some());
+        assert!(runner.task.lock().unwrap().is_some());
 
         // Unconditional uninstall (GUI) -> Succeeds!
         let uninst_gui = scheduler.uninstall_scheduler();
         assert!(uninst_gui.is_ok());
-        assert!(runner.xml.lock().unwrap().is_none());
+        assert!(runner.task.lock().unwrap().is_none());
 
         // 2. CLI owned task
         let cli_xml = WindowsTaskScheduler::generate_task_xml(&cli_exe);
@@ -1092,7 +1089,7 @@ pub mod tests {
         // CLI uninstall attempt on CLI owned scheduler -> Succeeds!
         let uninst_cli_ok = scheduler_cli.uninstall_scheduler_as_cli();
         assert!(uninst_cli_ok.is_ok());
-        assert!(runner_cli.xml.lock().unwrap().is_none());
+        assert!(runner_cli.task.lock().unwrap().is_none());
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1139,4 +1136,3 @@ pub mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }
-

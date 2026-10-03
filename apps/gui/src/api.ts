@@ -181,10 +181,13 @@ export async function getSystemInfo(): Promise<SystemInfo> {
     default_cwd: "/Users/mahirohiratsuka/develop",
     codex_installed: true,
     codex_path: "/opt/homebrew/bin/codex",
-    cli_worker_path: "~/.local/share/codex-scheduler/bin/codex-scheduler-cli",
-    cli_worker_installed: true,
+    scheduler_executable_path: "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui",
     scheduler_installed: true,
+    scheduler_path_matched: true,
+    scheduler_error: null,
     jobs_store_path: "~/.codex-scheduler/jobs.json",
+    cli_worker_path: "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui",
+    cli_worker_installed: true,
   };
 }
 

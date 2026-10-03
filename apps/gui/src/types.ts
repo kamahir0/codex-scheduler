@@ -56,9 +56,12 @@ export interface SystemInfo {
   default_cwd: string;
   codex_installed: boolean;
   codex_path: string | null;
+  scheduler_executable_path: string;
+  scheduler_installed: boolean;
+  scheduler_path_matched: boolean;
+  scheduler_error: string | null;
+  jobs_store_path: string;
   cli_worker_path: string;
   cli_worker_installed: boolean;
-  scheduler_installed: boolean;
-  jobs_store_path: string;
 }
 

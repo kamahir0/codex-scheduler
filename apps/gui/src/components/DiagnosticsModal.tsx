@@ -36,6 +36,15 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
       width={640}
     >
       <div style={{ marginBottom: 16 }}>
+        {systemInfo.scheduler_error && (
+          <Alert
+            message="OSスケジューラ登録エラー"
+            description={systemInfo.scheduler_error}
+            type="error"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+        )}
         {systemInfo.codex_installed ? (
           <Alert
             message="Codex CLI が正常に検出されました"
@@ -73,17 +82,24 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
             {systemInfo.codex_path || "None"}
           </Text>
         </Descriptions.Item>
-        <Descriptions.Item label="常設 Worker CLI 状態">
-          {systemInfo.cli_worker_installed ? (
-            <Tag color="green">常駐配置済 (Ready)</Tag>
-          ) : (
-            <Tag color="red">未配置 (Not Installed)</Tag>
-          )}
+        <Descriptions.Item label="スケジューラ実行方式">
+          <Tag color="purple">
+            {systemInfo.os === "macos"
+              ? "シングル実行ファイル・ヘッドレスモード (Gatekeeper 対策済)"
+              : "OS スケジューラ連携"}
+          </Tag>
         </Descriptions.Item>
-        <Descriptions.Item label="常設 Worker パス">
+        <Descriptions.Item label="スケジューラ実行パス">
           <Text copyable style={{ fontSize: 12, fontFamily: "monospace" }}>
-            {systemInfo.cli_worker_path}
+            {systemInfo.scheduler_executable_path}
           </Text>
+        </Descriptions.Item>
+        <Descriptions.Item label="実行パス一致状態">
+          {systemInfo.scheduler_path_matched ? (
+            <Tag color="green">一致 (Matched)</Tag>
+          ) : (
+            <Tag color="orange">不一致または再登録待機中 (Update Needed)</Tag>
+          )}
         </Descriptions.Item>
         <Descriptions.Item label="ジョブストア保存先">
           <Text copyable style={{ fontSize: 12, fontFamily: "monospace" }}>
@@ -112,8 +128,8 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
 
       <div style={{ marginTop: 20, padding: 12, background: "rgba(0,0,0,0.02)", borderRadius: 6 }}>
         <Paragraph style={{ margin: 0, fontSize: 12, color: "#8c8c8c" }}>
-          ※ <strong>バックグラウンド通知抑制 & 権限分離アーキテクチャ</strong>:
-          ジョブ追加ごとの「バックグラウンド項目が追加されました」通知を防止するため、アプリ全体で1つの固定LaunchAgentが内部で複数ジョブを管理します（1 App = 1 LaunchAgent）。初回登録時のみmacOSから通知されますが、以後のジョブ作成・削除・リトライでは通知は出ません。
+          ※ <strong>バックグラウンド通知抑制 & シングル実行ファイルアーキテクチャ</strong>:
+          LaunchAgent は別バイナリではなく、現在起動中のアプリ本体をヘッドレスモード（<code>--scheduler-tick</code>）で起動します。これにより、初回起動時にアプリを1回許可するだけでバックグラウンド実行に対する追加の Gatekeeper 警告を防ぎ、ジョブ追加ごとの通知も発生しません。
         </Paragraph>
       </div>
     </Modal>

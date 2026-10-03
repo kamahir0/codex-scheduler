@@ -202,27 +202,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Tick => {
-            let jobs = service.store().load_all()?;
-            let now = Utc::now();
-            let mut due_count = 0;
-
-            for job in jobs {
-                if job.status == codex_scheduler_core::models::JobStatus::Scheduled && job.scheduled_at <= now {
-                    println!("[Tick] Executing due job: {} (scheduled for {})", job.id, job.scheduled_at);
-                    match service.execute_job(&job.id).await {
-                        Ok(finished) => {
-                            println!("[Tick] Job {} finished with status: {:?}", finished.id, finished.status);
-                            due_count += 1;
-                        }
-                        Err(e) => {
-                            eprintln!("[Tick] Error executing job {}: {}", job.id, e);
-                        }
-                    }
-                }
-            }
-
-            if due_count > 0 {
-                println!("[Tick] Completed execution for {} due job(s).", due_count);
+            let executed = service.execute_tick().await?;
+            if !executed.is_empty() {
+                println!("[Tick] Completed execution for {} due job(s).", executed.len());
             }
         }
         Commands::InstallScheduler => {

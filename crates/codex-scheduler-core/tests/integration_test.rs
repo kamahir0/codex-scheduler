@@ -131,4 +131,56 @@ async fn test_tick_due_and_future_jobs_filter() {
     assert_eq!(future_jobs[0].id, future_job.id);
 }
 
+#[tokio::test]
+async fn test_execute_tick_shared_semantics_updates_history() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let store_path = temp_dir.path().join("test_shared_tick.json");
+    let store = JobStore::new_with_path(store_path);
+    let service = SchedulerService::with_scheduler(
+        store.clone(),
+        PathBuf::from("/bin/echo"),
+        Box::new(codex_scheduler_core::os_scheduler::FallbackScheduler),
+    );
+
+    // Past due job (ready for execution)
+    let past_time = Utc::now() - chrono::Duration::minutes(1);
+    let job = service
+        .schedule_job(
+            ProviderType::Codex,
+            "session-due-tick".to_string(),
+            temp_dir.path().to_path_buf(),
+            Some("test prompt".to_string()),
+            past_time,
+            None,
+        )
+        .unwrap();
+
+    // Future job (not due)
+    let future_time = Utc::now() + chrono::Duration::hours(1);
+    let _future = service
+        .schedule_job(
+            ProviderType::Codex,
+            "session-future-tick".to_string(),
+            temp_dir.path().to_path_buf(),
+            Some("future prompt".to_string()),
+            future_time,
+            None,
+        )
+        .unwrap();
+
+    // Run execute_tick directly without Tauri/GUI initialization
+    let finished_jobs = service.execute_tick().await.unwrap();
+    assert_eq!(finished_jobs.len(), 1);
+    assert_eq!(finished_jobs[0].id, job.id);
+
+    // Job in store should now have execution attempt history
+    let updated_job = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(updated_job.execution_history.len(), 1);
+
+    // Next tick execution should find 0 due jobs
+    let second_tick = service.execute_tick().await.unwrap();
+    assert_eq!(second_tick.len(), 0);
+}
+
+
 

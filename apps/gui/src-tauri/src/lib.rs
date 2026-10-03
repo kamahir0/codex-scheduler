@@ -7,8 +7,29 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum AppExecutionMode {
+    Gui,
+    HeadlessSchedulerTick,
+}
+
+/// Pure function to route execution mode from CLI arguments.
+pub fn parse_execution_mode<I, T>(args: I) -> AppExecutionMode
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    for arg in args {
+        if arg.as_ref() == "--scheduler-tick" {
+            return AppExecutionMode::HeadlessSchedulerTick;
+        }
+    }
+    AppExecutionMode::Gui
+}
+
 pub struct AppState {
     service: Mutex<SchedulerService>,
+    scheduler_error: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,10 +50,14 @@ pub struct SystemInfo {
     pub default_cwd: String,
     pub codex_installed: bool,
     pub codex_path: Option<String>,
+    pub scheduler_executable_path: String,
+    pub scheduler_installed: bool,
+    pub scheduler_path_matched: bool,
+    pub scheduler_error: Option<String>,
+    pub jobs_store_path: String,
+    // Backward compatibility fields for UI
     pub cli_worker_path: String,
     pub cli_worker_installed: bool,
-    pub scheduler_installed: bool,
-    pub jobs_store_path: String,
 }
 
 #[tauri::command]
@@ -78,7 +103,7 @@ fn create_job(payload: CreateJobPayload, state: State<'_, AppState>) -> Result<J
             scheduled_at,
             Some(policy),
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("スケジューラ登録またはジョブ作成に失敗しました: {}", e))
 }
 
 #[tauri::command]
@@ -95,23 +120,22 @@ fn delete_job(id: String, state: State<'_, AppState>) -> Result<bool, String> {
 
 #[tauri::command]
 async fn run_job_now(id: String, state: State<'_, AppState>) -> Result<Job, String> {
-    let (store, cli_path) = {
+    let (store, exe_path) = {
         let service = state.service.lock().map_err(|e| e.to_string())?;
-        (service.store().clone(), service.cli_path().to_path_buf())
+        (service.store().clone(), service.exe_path().to_path_buf())
     };
-    let service = SchedulerService::new(store, cli_path);
+    let service = SchedulerService::new(store, exe_path);
     service.execute_job(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn provision_worker(state: State<'_, AppState>) -> Result<String, String> {
-    let path = codex_scheduler_core::worker::ensure_worker_installed()
-        .map_err(|e| e.to_string())?;
-    let mut service = state.service.lock().map_err(|e| e.to_string())?;
-    let store = service.store().clone();
-    *service = SchedulerService::new(store, path.clone());
-    let _ = service.ensure_scheduler();
-    Ok(path.to_string_lossy().to_string())
+    let service = state.service.lock().map_err(|e| e.to_string())?;
+    service.ensure_scheduler().map_err(|e| e.to_string())?;
+    if let Ok(mut err_lock) = state.scheduler_error.lock() {
+        *err_lock = None;
+    }
+    Ok(service.exe_path().to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -131,9 +155,10 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
         Err(_) => (false, None),
     };
 
-    let cli_worker_path = service.cli_path().to_string_lossy().to_string();
-    let cli_worker_installed = service.cli_path().is_file();
+    let scheduler_executable_path = service.exe_path().to_string_lossy().to_string();
     let scheduler_installed = service.is_scheduler_installed();
+    let scheduler_path_matched = service.is_scheduler_path_matched();
+    let scheduler_error = state.scheduler_error.lock().ok().and_then(|e| e.clone());
     let jobs_store_path = service.store().path().to_string_lossy().to_string();
 
     Ok(SystemInfo {
@@ -141,25 +166,80 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
         default_cwd,
         codex_installed,
         codex_path,
-        cli_worker_path,
-        cli_worker_installed,
+        scheduler_executable_path: scheduler_executable_path.clone(),
         scheduler_installed,
+        scheduler_path_matched,
+        scheduler_error,
         jobs_store_path,
+        cli_worker_path: scheduler_executable_path,
+        cli_worker_installed: scheduler_installed,
     })
+}
+
+/// Runs the headless scheduler tick process.
+/// In this mode:
+/// - No Tauri GUI window is created
+/// - No Dock icon is displayed as a GUI application
+/// - No webview or frontend is loaded
+/// - No GUI dialog plugins are initialized
+/// - Directly executes due jobs via codex-scheduler-core shared semantics and exits cleanly
+pub fn run_headless_tick() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("[Headless Scheduler] Failed to initialize runtime: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    rt.block_on(async {
+        let store = match JobStore::default_store() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[Headless Scheduler] Failed to open job store: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-scheduler-gui"));
+        let service = SchedulerService::new(store, exe_path);
+
+        match service.execute_tick().await {
+            Ok(finished) => {
+                if !finished.is_empty() {
+                    println!("[Headless Scheduler] Executed {} due job(s).", finished.len());
+                }
+            }
+            Err(e) => {
+                eprintln!("[Headless Scheduler] Tick execution error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    });
 }
 
 pub fn run() {
     let store = JobStore::default_store().expect("Failed to initialize job store");
-    let worker_path = codex_scheduler_core::worker::ensure_worker_installed()
-        .unwrap_or_else(|_| codex_scheduler_core::worker::canonical_worker_path());
-    let service = SchedulerService::new(store, worker_path);
-    // アプリ起動時に単一常設LaunchAgentを確実に登録（登録済みなら再ロードせずスキップ）
-    let _ = service.ensure_scheduler();
+    let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-scheduler-gui"));
+    let service = SchedulerService::new(store, exe_path);
+
+    // アプリ起動時に単一常設LaunchAgentを確実に登録（登録済みかつ同内容なら再ロードせずスキップ）
+    let scheduler_error = match service.ensure_scheduler() {
+        Ok(()) => None,
+        Err(e) => {
+            eprintln!("[Scheduler] Warning: Failed to ensure OS scheduler on startup: {}", e);
+            Some(e.to_string())
+        }
+    };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             service: Mutex::new(service),
+            scheduler_error: Mutex::new(scheduler_error),
         })
         .invoke_handler(tauri::generate_handler![
             list_jobs,
@@ -173,4 +253,32 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_execution_mode_routing() {
+        // Flag absent -> Gui
+        assert_eq!(
+            parse_execution_mode(vec!["codex-scheduler-gui"]),
+            AppExecutionMode::Gui
+        );
+        assert_eq!(
+            parse_execution_mode(vec!["codex-scheduler-gui", "--verbose"]),
+            AppExecutionMode::Gui
+        );
+
+        // Flag present -> HeadlessSchedulerTick
+        assert_eq!(
+            parse_execution_mode(vec!["codex-scheduler-gui", "--scheduler-tick"]),
+            AppExecutionMode::HeadlessSchedulerTick
+        );
+        assert_eq!(
+            parse_execution_mode(vec!["/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui", "--scheduler-tick"]),
+            AppExecutionMode::HeadlessSchedulerTick
+        );
+    }
 }

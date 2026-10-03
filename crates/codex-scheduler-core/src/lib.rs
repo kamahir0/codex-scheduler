@@ -31,53 +31,62 @@ pub enum CoreError {
 
 pub struct SchedulerService {
     store: JobStore,
-    cli_path: PathBuf,
+    exe_path: PathBuf,
     scheduler: std::sync::Arc<dyn os_scheduler::SchedulerBackend>,
 }
 
 impl SchedulerService {
-    pub fn new(store: JobStore, cli_path: PathBuf) -> Self {
+    pub fn new(store: JobStore, exe_path: PathBuf) -> Self {
         Self {
             store,
-            cli_path,
+            exe_path,
             scheduler: std::sync::Arc::from(get_platform_scheduler()),
         }
     }
 
     pub fn with_scheduler(
         store: JobStore,
-        cli_path: PathBuf,
+        exe_path: PathBuf,
         scheduler: Box<dyn os_scheduler::SchedulerBackend>,
     ) -> Self {
         Self {
             store,
-            cli_path,
+            exe_path,
             scheduler: std::sync::Arc::from(scheduler),
         }
     }
 
     pub fn default_service() -> Result<Self, CoreError> {
         let store = JobStore::default_store()?;
-        let worker_path = worker::ensure_worker_installed()
-            .unwrap_or_else(|_| worker::canonical_worker_path());
-        Ok(Self::new(store, worker_path))
+        let exe_path = std::env::current_exe().unwrap_or_else(|_| {
+            worker::ensure_worker_installed().unwrap_or_else(|_| worker::canonical_worker_path())
+        });
+        Ok(Self::new(store, exe_path))
     }
 
     pub fn store(&self) -> &JobStore {
         &self.store
     }
 
+    pub fn exe_path(&self) -> &Path {
+        &self.exe_path
+    }
+
     pub fn cli_path(&self) -> &Path {
-        &self.cli_path
+        &self.exe_path
     }
 
     pub fn ensure_scheduler(&self) -> Result<(), CoreError> {
-        self.scheduler.ensure_scheduler_installed(&self.cli_path)?;
+        self.scheduler.ensure_scheduler_installed(&self.exe_path)?;
         Ok(())
     }
 
     pub fn is_scheduler_installed(&self) -> bool {
         self.scheduler.is_scheduler_installed()
+    }
+
+    pub fn is_scheduler_path_matched(&self) -> bool {
+        self.scheduler.is_scheduler_path_matched(&self.exe_path)
     }
 
     pub fn schedule_job(
@@ -91,8 +100,8 @@ impl SchedulerService {
     ) -> Result<Job, CoreError> {
         let job = Job::new(provider, session_id, cwd, prompt, scheduled_at, retry_policy)?;
 
-        // Ensure persistent OS scheduler service is installed (no-op if already present)
-        let _ = self.ensure_scheduler();
+        // Ensure persistent OS scheduler service is installed and error is strictly propagated
+        self.ensure_scheduler()?;
 
         // Save to store
         self.store.insert_job(job.clone())?;
@@ -119,15 +128,32 @@ impl SchedulerService {
         Ok(self.store.delete_job(job_id)?)
     }
 
+    /// Periodic tick execution: atomically claims due jobs and executes them.
+    /// Shared between headless GUI `--scheduler-tick` and CLI `tick`.
+    pub async fn execute_tick(&self) -> Result<Vec<Job>, CoreError> {
+        let now = Utc::now();
+        let due_jobs = self.store.claim_due_jobs(now)?;
+        let mut results = Vec::new();
+
+        for job in due_jobs {
+            match self.execute_claimed_job(job).await {
+                Ok(finished) => results.push(finished),
+                Err(e) => eprintln!("[Tick] Error executing job: {}", e),
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Single job manual or specific execution.
+    /// Atomically claims the job to prevent duplicate concurrent execution.
     pub async fn execute_job(&self, job_id: &str) -> Result<Job, CoreError> {
-        let mut job = self
-            .store
-            .get_job(job_id)?
-            .ok_or_else(|| CoreError::JobNotFound(job_id.to_string()))?;
+        let job = self.store.claim_job_for_execution(job_id)?;
+        self.execute_claimed_job(job).await
+    }
 
-        job.set_status(JobStatus::Running);
-        self.store.update_job(&job)?;
-
+    /// Shared core job execution logic after the job has been claimed into `Running` status.
+    async fn execute_claimed_job(&self, mut job: Job) -> Result<Job, CoreError> {
         let adapter = CodexAdapter::new();
         let attempt_number = (job.execution_history.len() + 1) as u32;
         let started_at = Utc::now();

@@ -27,19 +27,18 @@ GitHub Releasesを通じて、macOS（DMG）およびWindows（インストー�
 - `*.msi`: WiXインストーラは保守コストおよび形式重複による選択迷いを防ぐため、NSIS `.exe` に一本化し、生成・公開対象から除外する。
 - Linux配布物: 現状サポート対象外。
 
-### DELIVERY-BUNDLE-002: 常設Worker CLIの権限分離と固定パスプロビジョニング
+### DELIVERY-BUNDLE-002: macOS シングル実行ファイル構成とプラットフォーム別スケジューラ実行主体
 
-頻繁に更新・置換されるGUIアプリ（`.app`）と、macOS/Windowsスケジューラからバックグラウンド実行される常設Worker（`codex-scheduler-cli`）を明確に分離しなければならない（MUST）。
+macOSデスクトップ版において、外部の別バイナリ（`codex-scheduler-cli`）に起因するGatekeeper拒否を根本防止するため、メインアプリ実行ファイル（`Codex Scheduler.app/Contents/MacOS/...`）自身をOSスケジューラの実行主体としなければならない（MUST）。
 
-1. **固定Worker配置パス（Canonical Worker Path）**:
-   - macOS / Linux: `~/.local/share/codex-scheduler/bin/codex-scheduler-cli`
-   - Windows: `%LOCALAPPDATA%\codex-scheduler\bin\codex-scheduler-cli.exe`
-2. **自動プロビジョニング（Provisioning）**:
-   - GUIアプリは初回起動時または更新時、同梱バイナリ（アプリ内Resources、同一階層、またはシステムPATH）から上記固定Worker配置パスへバイナリを配置・コピーし、Unix系OSでは実行可能権限（`0o755`）を付与しなければならない（MUST）。
-   - 固定パスへの書き込みが制限される例外環境下では、検出された同梱バイナリまたはPATH上のバイナリへ安全にフォールバックしなければならない（SHOULD）。
-3. **OSスケジューラ登録**:
-   - `launchd` plist（macOS）および Task Scheduler（Windows）の `ProgramArguments` / コマンドラインには、必ずこの固定Workerパスの絶対パスを登録しなければならない（MUST）。GUIバイナリ自身（`current_exe`）を登録してはならない（MUST NOT）。
-   - これにより、GUIアプリ本体（`.app`）をDMG経由で上書き置換・更新しても、登録済みLaunchAgentジョブの実行パスおよびWorker CLIの権限状態を永続的に維持しなければならない。
+1. **macOS 実行主体（1 App / 1 Executable / 2 Modes）**:
+   - LaunchAgent（`dev.codexscheduler.scheduler.plist`）の `ProgramArguments` には、現在実行中のアプリ本体の絶対パス（`std::env::current_exe()`）および `--scheduler-tick` を登録しなければならない（MUST）。
+   - 外部固定パス（`~/.local/share/codex-scheduler/bin/codex-scheduler-cli`）やアプリ内別バイナリへの依存を排除する（MUST NOT）。
+   - アプリ本体が移動・更新された場合は、次回起動時またはジョブ登録時にLaunchAgent内のパス差分を検知して安全に更新しなければならない（MUST）。同一パスかつ登録済みであれば再登録を行ってはならない（MUST NOT）。
+2. **Windows 実行主体**:
+   - Windows環境においては、既存の Task Scheduler 機構との互換性を維持し、`codex-scheduler-cli.exe tick` またはメイン実行ファイルのスケジュール起動を安全に利用する。
+3. **外部 Worker CLI（`codex-scheduler-cli`）の扱い**:
+   - CLI ツールは開発者向け・手動操作用としてリポジトリ内で維持してよいが、macOS デスクトップ版の正常な予約実行において CLI の存在やGatekeeper通過を必須条件にしてはならない（MUST NOT）。
 
 ### DELIVERY-BUNDLE-003: バンドルメタデータ
 
@@ -56,7 +55,8 @@ GitHub Releasesを通じて、macOS（DMG）およびWindows（インストー�
 Apple Developer Programの有償アカウントを使用しない完全無料オープンソース配布方針において、以下を満たさなければならない（MUST）。
 
 1. **macOSコード署名**: `tauri.conf.json` の `bundle.macOS.signingIdentity` は `"-"`（ad-hoc署名）を明示指定し、Apple Siliconにおける実行拒否を防止する。
-2. **権限責任の局所化**: 毎回ハッシュ値が変化しTCC権限が引き継がれないGUI本体にはファイルアクセス権限を恒久要求する処理を持たせず、固定パスに永続常駐するWorker CLI側に実行権限を寄せる。
+2. **Gatekeeper 回避の禁止**: アプリケーション側から `xattr -d com.apple.quarantine` などのGatekeeper / quarantine解除コマンドを無断で自動実行してはならない（MUST NOT）。
+3. **単一実行エンティティによる信頼一元化**: ユーザーが `Codex Scheduler.app` を初回に許可（Control+クリックで「開く」等）すれば、同一の実行可能ファイルがLaunchAgentからヘッドレス起動されるため、追加のMach-Oバイナリに対するGatekeeper警告を発生させずにバックグラウンド実行を完結させる。固定パス配置による「identity永続化」は保証できないためこれに依存しない。
 
 ### DELIVERY-CI-001: GitHub Actions 自動リリースパイプライン
 

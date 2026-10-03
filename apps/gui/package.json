@@ -19,10 +19,11 @@
   "name": "@codex-scheduler/gui",
   "private": true,
   "scripts": {
-    "build": "tsc --noEmit && vite build",
+    "build": "vite build",
     "dev": "vite --host 127.0.0.1",
-    "lint": "tsc --noEmit",
-    "tauri": "tauri"
+    "lint": "npm run typecheck",
+    "tauri": "tauri",
+    "typecheck": "tsc --noEmit"
   },
   "type": "module",
   "version": "0.5.0"

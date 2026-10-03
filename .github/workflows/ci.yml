@@ -10,9 +10,28 @@ permissions:
   contents: read
 
 jobs:
-  check-all:
-    name: Mechanical Verification
+  rust-macos:
+    name: Rust & Rationale (macOS)
     runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run rationale check
+        run: cargo xtask check-rationale
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+  frontend:
+    name: Frontend Verification (Linux)
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,14 +42,14 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Run all mechanical checks
-        run: cargo xtask check-all
+      - name: Frontend typecheck & lint
+        run: npm run frontend:lint
+
+      - name: Frontend build
+        run: npm run frontend:build
 
   windows-test:
     name: Windows Verification & Task Scheduler Smoke
@@ -41,6 +60,9 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Run workspace tests
         run: cargo test --workspace

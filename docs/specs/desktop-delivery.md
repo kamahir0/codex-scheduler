@@ -28,7 +28,7 @@ GitHub Releasesを通じて、macOS（DMG）およびWindows（インストー�
 以下の形式は、ユーザー向けRelease assetとして公開してはならない（MUST NOT）。
 - `*.app.tar.gz`: 現状自動Updater機能を使用しておらず、ユーザーを混乱させるため公開禁止とする。
 - `*.msi`: WiXインストーラは保守コストおよび形式重複による選択迷いを防ぐため、NSIS `.exe` に一本化し、生成・公開対象から除外する。
-- Windows standalone CLI: Windows環境ではTask Scheduler常設バックエンドが未統合（FallbackScheduler）であるため、CLI単体での予約実行完結が未達である。したがってv0.4.0では正式配布物から除外する（Windows環境での予約実行はDesktop distributionを使用する。CLI-only常設スケジューラは将来Objective候補）。
+- Windows standalone CLI: Windows環境ではTask Scheduler常設バックエンドが未統合（FallbackScheduler）であるため、CLI単体での常設予約実行が未達である。したがってv0.4.0では正式配布物から除外する（Windows環境における常設Task Scheduler統合はDesktop/CLIともに次期Objective候補とする）。
 - Linux配布物: 現状サポート対象外。
 
 ### DELIVERY-BUNDLE-002: macOS シングル実行ファイル構成とプラットフォーム別スケジューラ実行主体
@@ -40,7 +40,7 @@ macOSデスクトップ版において、外部の別バイナリ（`codex-sched
    - 外部固定パス（`~/.local/share/codex-scheduler/bin/codex-scheduler-cli`）やアプリ内別バイナリへの依存を排除する（MUST NOT）。
    - アプリ本体が移動・更新された場合は、次回起動時またはジョブ登録時にLaunchAgent内のパス差分を検知して安全に更新しなければならない（MUST）。同一パスかつ登録済みであれば再登録を行ってはならない（MUST NOT）。
 2. **Windows 実行主体**:
-   - Windows環境においては、既存の Task Scheduler 機構との互換性を維持し、`codex-scheduler-cli.exe tick` またはメイン実行ファイルのスケジュール起動を安全に利用する。
+   - Windows環境においては、現行バージョンでは常設Task Schedulerバックエンドは未統合（FallbackScheduler）であり、アプリ起動中の管理・手動実行のみサポートする。Task Scheduler連携による常設バックグラウンド実行は次期Objective候補とする。
 3. **外部 Worker CLI（`codex-scheduler-cli`）の扱い**:
    - CLI ツールは開発者向け・手動操作用としてリポジトリ内で維持してよいが、macOS デスクトップ版の正常な予約実行において CLI の存在やGatekeeper通過を必須条件にしてはならない（MUST NOT）。
 

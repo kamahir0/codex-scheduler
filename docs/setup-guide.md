@@ -13,10 +13,10 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
 | 種別 | OS / アーキテクチャ | ダウンロードファイル | 説明 |
 | :--- | :--- | :--- | :--- |
 | **Desktop GUI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-<version>-macos-arm64.dmg` | GUIデスクトップアプリ（単体で予約実行完結） |
-| **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ（単体で予約実行完結） |
+| **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ（アプリ起動中管理・手動実行対応） |
 | **Standalone CLI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLI実行ファイル（GUI不要、単体で予約実行完結） |
 
-※ Windows 環境における自動予約実行は Desktop GUI アプリケーションをご利用ください（Windows CLI 単体での Task Scheduler 常設統合は次期アップデートでの対応を予定しています）。
+※ Windows 環境では現行バージョンにおいて常設バックグラウンド実行（Task Scheduler連携）は未実装（次期アップデートで対応予定）であり、Desktop GUI アプリ起動中のジョブ管理・手動実行に対応しています。
 
 ---
 

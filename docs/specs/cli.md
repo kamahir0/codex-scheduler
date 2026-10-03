@@ -22,7 +22,7 @@ CLI はデスクトップ環境への依存を持たず単独で予約・実行�
    - クレート名（`codex-scheduler-cli`）にかかわらず、公開バイナリ名は `codex-scheduler` とする（Cargo `[[bin]]` 定義）。
 2. **独立した実行形態**:
    - CLI は単一の standalone バイナリとして動作し、Desktop GUI アプリケーション（`Codex Scheduler.app` 等）のインストールを必須としてはならない（MUST NOT）。
-   - ただし、常設スケジューラ自動登録（`install-scheduler` / 自動 ensure によるバックグラウンド定期実行）の正式サポートプラットフォームは、現時点で **macOS (LaunchAgent)** のみとする。Windows 環境における CLI コマンドコントラクト（ジョブ一覧・作成・手動 tick・JSON 出力等）は cross-platform に利用可能であるが、CLI 単体での Task Scheduler 常設バックエンドは次期 Objective 候補とし、Windows での自動予約実行は Desktop distribution を正式サポートとする。
+   - ただし、常設スケジューラ自動登録（`install-scheduler` / 自動 ensure によるバックグラウンド定期実行）の正式サポートプラットフォームは、現時点で **macOS (LaunchAgent)** のみとする。Windows 環境における CLI コマンドコントラクト（ジョブ一覧・作成・手動 tick・JSON 出力等）は cross-platform に利用可能であるが、Windows における常設OSスケジューラ（Task Scheduler）連携は現時点で未対応（未実装、次期 Objective 候補）であり、自動バックグラウンド実行はサポートされない（現行バージョンでは手動 tick またはアプリ起動中実行のみ利用可能）。
 3. **共有コアの利用**:
    - ジョブモデル、バリデーション、排他制御、リトライ判定、Codex アダプタ呼出、およびスケジューラ tick 実行は、すべて `codex-scheduler-core` のロジックを一元的に使用しなければならない（MUST）。
 
@@ -61,18 +61,18 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
      - `version`: プロダクトバージョン文字列
      - `store_path`: `jobs.json` の絶対パス
      - `scheduler`:
-       - `installed`: bool（登録ファイルの有無）
-       - `ready`: bool（正常稼働準備状態）
-       - `owner`: `"desktop" | "cli" | "none" | "legacy" | "invalid"`
-       - `executable`: 登録実行ファイルパス（Option）
-       - `path_matched`: bool
+       - `installed`: bool（登録ファイルの有無。未実装プラットフォームでは false）
+       - `ready`: bool（正常稼働準備状態。未実装プラットフォームでは false）
+       - `owner`: `"desktop" | "cli" | "none" | "legacy" | "invalid"`（未実装プラットフォームでは `"none"`）
+       - `executable`: 登録実行ファイルパス（Option、未実装プラットフォームでは null）
+       - `path_matched`: bool（未実装プラットフォームでは false）
      - `platform`: OS名文字列
 
 ### CLI-CMD-004: スケジューラ所有権認識と自己プロビジョニング（macOS）
 
 1. **macOS CLI-only 環境での自己プロビジョニング**:
    - macOS 環境において Desktop が未インストールまたはスケジューラ未登録の場合、`schedule` または `install-scheduler` 実行時に、CLI 自身を実行主体（`codex-scheduler --scheduler-tick`）とする常設スケジューラ（LaunchAgent）を安全に登録（ensure）できなければならない（MUST）。
-   - ※ Windows 環境における CLI 単体での Task Scheduler 常設登録は本バージョンの要件とせず（次期 Objective 候補）、`schedule` は共有 JobStore へのジョブ追加を正常に行う。
+   - ※ Windows 環境における常設 Task Scheduler 連携は現バージョンでは未実装（次期 Objective 候補）であり、`schedule` は共有 JobStore へのジョブ追加を正常に行うが、OS スケジューラの自動登録やアプリ終了後の自動起動は行われない。
 2. **Desktop 所有スケジューラの尊重**:
    - macOS 環境において既に有効な Desktop 所有のスケジューラが登録されている場合、CLI は LaunchAgent 設定を変更してはならない（MUST NOT overwrite）。ジョブは共有 `jobs.json` に追加され、Desktop スケジューラによって実行される。
 3. **安全なアンインストール保護**:

@@ -57,7 +57,7 @@
 | **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ |
 | **Standalone CLI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLI実行ファイル (`codex-scheduler`) |
 
-※ Windows 環境における自動予約実行は Desktop GUI アプリケーションをご利用ください（CLI単体でのTask Scheduler常設登録は今後のアップデートで提供予定です）。
+※ Windows 環境では現行バージョンにおいて常設バックグラウンド実行（Task Scheduler連携）は未実装（次期アップデートで対応予定）であり、Desktop GUI アプリ起動中のジョブ管理・手動実行に対応しています。
 
 ### 前提条件
 本スケジューラはバックグラウンドで `codex` コマンドを実行します。端末に OpenAI Codex CLI がインストールされていることを確認してください。

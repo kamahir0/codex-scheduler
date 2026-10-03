@@ -32,8 +32,8 @@ Codex CLI が検出されなかった場合、メイン画面上部に Ant Desig
 
 - OS / アーキテクチャ
 - 検出された `codex` コマンドパス（見つからない場合は `未検出`）
-- スケジューラ実行バイナリパス（macOS: アプリ本体実行ファイルパス、Windows: Worker CLIパス）
-- スケジューラ所有者（macOS: Desktop / CLI / 未登録 / レガシー / 不正）
-- スケジューラ実行パス一致状態（現在アプリ実行パスとLaunchAgent登録パスの一致）
+- スケジューラ実行バイナリパス（macOS: アプリ本体実行ファイルパス、Windows: 常設未対応）
+- スケジューラ所有者（macOS: Desktop / CLI / 未登録 / レガシー / 不正、Windows: 対象外）
+- スケジューラ実行パス一致状態（macOS: 現在アプリ実行パスとLaunchAgent登録パスの一致、Windows: 未対応）
 - ジョブデータ保存先（`~/.codex-scheduler/jobs.json`）
-- LaunchAgent / Task Scheduler 登録状況（登録済 / 未登録 / 登録エラー）
+- OSスケジューラ常設サービス登録状況（macOS: 登録済 / 未登録 / エラー、Windows: 未対応）

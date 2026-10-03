@@ -7,6 +7,8 @@ Domain: OSSCHED
 ## 概要
 
 GUIデスクトップアプリが終了・就寝中であっても、指定時刻以降にOSネイティブのタイマー機能（定期ポーリング）によってバックグラウンドで待機中ジョブを実行するための仕様を定める。
+現行バージョン（v0.4.0）における常設OSスケジューラ（バックグラウンド自動定期実行）の production backend は **macOS (LaunchAgent)** のみである。
+Windows 環境においては、常設 Task Scheduler 連携は計画仕様（次期 Objective 候補）として位置付けられ、現行コア実装は `FallbackScheduler`（内部 no-op、スケジューラ未登録・未準備状態）として動作する。Windows ではアプリ起動中の管理・手動実行のみがサポートされ、アプリ終了後の自動起動はサポートされない。
 macOS においてはジョブごとに新しいバックグラウンド項目通知が出るのを防止するため、アプリ全体で1つの固定LaunchAgentを常設し、アプリ内部で複数ジョブを管理するアーキテクチャを採用する（1 Application = 1 LaunchAgent, N Jobs = jobs store内部管理）。
 また、Gatekeeperによる別バイナリ拒否を根本排除するため、macOSデスクトップ環境ではメインアプリ実行ファイル（`Codex Scheduler.app/Contents/MacOS/...`）自身をヘッドレスモード（`--scheduler-tick`）で起動する「1 app / 1 executable / 2 execution modes」構成とする。
 
@@ -45,6 +47,7 @@ macOS環境において、バックグラウンド実行を担保するために
 ### OS-SCHED-002: Windows Task Scheduler 連携（計画仕様 / 次期Objective候補）
 
 ※ 現行バージョン（v0.4.0）のコア実装において、non-macOS プラットフォームは `FallbackScheduler`（内部no-op）として動作し、Windows Task Scheduler への常設タスク自動登録は未実装である。
+コア API は `is_scheduler_installed() == false`, `is_scheduler_ready() == false`, `is_scheduler_path_matched() == false`, `get_scheduler_owner() == SchedulerOwner::None` を返し、存在しない常設スケジューラを Ready と誤認させない。
 Windows Task Scheduler backend の本格統合は次期 Objective 候補とし、本仕様は将来の実装要件として定義する。
 
 Windows環境において、タスクスケジューラ連携実装時は以下の仕様に従ってタスクを登録・管理しなければならない（MUST）。
@@ -85,7 +88,7 @@ OSスケジューラ連携におけるジョブ実行予定日時（`scheduled_a
 2. **期限到来条件（Due Condition）**:
    - ジョブが実行対象（Due）となる条件は `scheduled_at <= current_time` であり、かつステータスが `Scheduled` または `Retrying` であること（MUST）。
 3. **定期ポーリング起動**:
-   - macOS `launchd`（`StartInterval: 60`）および Windows Task Scheduler による定期ポーリング tick により、期限到来したジョブが検出・抽出（claim）される。
+   - macOS `launchd`（`StartInterval: 60`）等の定期ポーリング tick により、期限到来したジョブが検出・抽出（claim）される（Windows では将来の Task Scheduler 連携またはアプリ起動中タイマー / 手動 tick により検出）。
    - 期限到来したジョブは、到来時刻以降に最初に到来するスケジューラ tick において実行対象となる（MUST）。
 4. **通常遅延と追加遅延**:
    - 定期ポーリング間隔が60秒であるため、通常運用時における実行開始は `scheduled_at` 到来後 0〜約60秒以内となる（SHOULD）。

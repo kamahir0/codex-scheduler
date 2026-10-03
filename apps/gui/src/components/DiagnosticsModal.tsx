@@ -86,7 +86,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
           <Tag color="purple">
             {systemInfo.os === "macos"
               ? "シングル実行ファイル・ヘッドレスモード (Gatekeeper 対策済)"
-              : "OS スケジューラ連携"}
+              : "アプリ起動中管理 (常設OSスケジューラ未対応)"}
           </Tag>
         </Descriptions.Item>
         <Descriptions.Item label="スケジューラ実行パス">
@@ -95,39 +95,51 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
           </Text>
         </Descriptions.Item>
         <Descriptions.Item label="OSスケジューラ常設サービス">
-          {systemInfo.scheduler_installed ? (
-            <Tag color="green">
-              {systemInfo.os === "macos"
-                ? "登録済 (単一LaunchAgent: dev.codexscheduler.scheduler)"
-                : "登録済 (Task Scheduler)"}
-            </Tag>
+          {systemInfo.os === "macos" ? (
+            systemInfo.scheduler_installed ? (
+              <Tag color="green">登録済 (単一LaunchAgent: dev.codexscheduler.scheduler)</Tag>
+            ) : (
+              <Tag color="orange">未登録 (起動時またはジョブ作成時に自動登録)</Tag>
+            )
           ) : (
-            <Tag color="orange">未登録 (起動時またはジョブ作成時に自動登録)</Tag>
+            <Tag color="default">未対応（Task Scheduler連携は今後対応予定）</Tag>
           )}
         </Descriptions.Item>
         <Descriptions.Item label="スケジューラ所有権">
-          {systemInfo.scheduler_owner === "desktop" ? (
-            <Tag color="blue">Desktop アプリ所有 (優先)</Tag>
-          ) : systemInfo.scheduler_owner === "cli" ? (
-            <Tag color="cyan">CLI 所有 (Desktop起動時に安全に移行可能)</Tag>
-          ) : systemInfo.scheduler_owner === "legacy" ? (
-            <Tag color="orange">旧形式 (自動移行対象)</Tag>
+          {systemInfo.os === "macos" ? (
+            systemInfo.scheduler_owner === "desktop" ? (
+              <Tag color="blue">Desktop アプリ所有 (優先)</Tag>
+            ) : systemInfo.scheduler_owner === "cli" ? (
+              <Tag color="cyan">CLI 所有 (Desktop起動時に安全に移行可能)</Tag>
+            ) : systemInfo.scheduler_owner === "legacy" ? (
+              <Tag color="orange">旧形式 (自動移行対象)</Tag>
+            ) : (
+              <Tag color="default">{systemInfo.scheduler_owner === "none" ? "未登録" : (systemInfo.scheduler_owner || "未登録")}</Tag>
+            )
           ) : (
-            <Tag color="default">{systemInfo.scheduler_owner || "未登録"}</Tag>
+            <Tag color="default">対象外 (常設スケジューラ未実装)</Tag>
           )}
         </Descriptions.Item>
         <Descriptions.Item label="スケジューラ稼働準備状態">
-          {systemInfo.scheduler_ready ? (
-            <Tag color="green">準備完了 (Ready / Loaded)</Tag>
+          {systemInfo.os === "macos" ? (
+            systemInfo.scheduler_ready ? (
+              <Tag color="green">準備完了 (Ready / Loaded)</Tag>
+            ) : (
+              <Tag color="orange">未完了 (Not Ready)</Tag>
+            )
           ) : (
-            <Tag color="orange">未完了 (Not Ready)</Tag>
+            <Tag color="default">常設バックグラウンド実行は未対応</Tag>
           )}
         </Descriptions.Item>
         <Descriptions.Item label="実行パス一致状態">
-          {systemInfo.scheduler_path_matched ? (
-            <Tag color="green">一致 (Matched)</Tag>
+          {systemInfo.os === "macos" ? (
+            systemInfo.scheduler_path_matched ? (
+              <Tag color="green">一致 (Matched)</Tag>
+            ) : (
+              <Tag color="orange">不一致または再登録待機中 (Update Needed)</Tag>
+            )
           ) : (
-            <Tag color="orange">不一致または再登録待機中 (Update Needed)</Tag>
+            <Tag color="default">未対応</Tag>
           )}
         </Descriptions.Item>
         <Descriptions.Item label="ジョブストア保存先">
@@ -139,7 +151,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
           <Tag color="cyan">
             {systemInfo.os === "macos"
               ? "macOS LaunchAgent (管理者権限不要・通知初回のみ)"
-              : "Windows Task Scheduler"}
+              : "Windows Task Scheduler (対応予定)"}
           </Tag>
         </Descriptions.Item>
       </Descriptions>
@@ -147,7 +159,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
       <div style={{ marginTop: 20, padding: 12, background: "rgba(0,0,0,0.02)", borderRadius: 6 }}>
         <Paragraph style={{ margin: 0, fontSize: 12, color: "#8c8c8c" }}>
           ※ <strong>バックグラウンド実行 & スケジューラ所有権</strong>:
-          macOS では単一の LaunchAgent（<code>dev.codexscheduler.scheduler</code>）により毎分ヘッドレス定期実行されます。アプリ本体を直接ヘッドレスモード（<code>--scheduler-tick</code>）で起動することで追加の Gatekeeper 警告を防ぎます。Desktop アプリと standalone CLI が共存する場合でも、OSスケジューラは常に1つに保たれ、Desktop アプリが優先して所有します。
+          macOS では単一の LaunchAgent（<code>dev.codexscheduler.scheduler</code>）により毎分ヘッドレス定期実行されます。アプリ本体を直接ヘッドレスモード（<code>--scheduler-tick</code>）で起動することで追加の Gatekeeper 警告を防ぎます。Desktop アプリと standalone CLI が共存する場合でも、OSスケジューラは常に1つに保たれ、Desktop アプリが優先して所有します。Windows 環境では現行バージョンにおいて常設バックグラウンド実行（Task Scheduler連携）は未対応であり、アプリ起動中の管理・手動実行のみサポートされます。
         </Paragraph>
       </div>
     </Modal>

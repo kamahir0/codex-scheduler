@@ -98,6 +98,15 @@ pub fn get_platform_scheduler() -> Box<dyn SchedulerBackend> {
     }
 }
 
+/// non-macOS環境向けのフォールバック実装。
+/// 現行バージョンでは常設OSスケジューラ（Windows Task Scheduler等）は未対応であり、
+/// 診断系（is_scheduler_installed, is_scheduler_ready, is_scheduler_path_matched）はfalseを返し、
+/// 所有者はSchedulerOwner::Noneを返す。
+///
+/// WHY: Windowsなど未実装のプラットフォームで存在しないスケジューラをReadyと誤認させないため。
+/// 一方で、ジョブ作成や手動実行などのJobStore操作自体を阻害しないよう、
+/// ensure_scheduler_installedやregister_jobはno-op Ok(())を返す。
+/// EVIDENCE: test_fallback_scheduler_diagnostics_unsupported
 pub struct FallbackScheduler;
 
 impl SchedulerBackend for FallbackScheduler {
@@ -106,11 +115,23 @@ impl SchedulerBackend for FallbackScheduler {
     }
 
     fn is_scheduler_installed(&self) -> bool {
-        true
+        false
+    }
+
+    fn is_scheduler_ready(&self) -> bool {
+        false
     }
 
     fn is_scheduler_path_matched(&self, _exe_path: &Path) -> bool {
-        true
+        false
+    }
+
+    fn get_scheduler_owner(&self) -> SchedulerOwner {
+        SchedulerOwner::None
+    }
+
+    fn get_scheduler_executable_path(&self) -> Option<std::path::PathBuf> {
+        None
     }
 
     fn uninstall_scheduler(&self) -> Result<(), SchedulerError> {
@@ -125,3 +146,27 @@ impl SchedulerBackend for FallbackScheduler {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_fallback_scheduler_diagnostics_unsupported() {
+        let scheduler = FallbackScheduler;
+        let dummy_path = Path::new("/dummy/path/codex-scheduler");
+
+        assert!(!scheduler.is_scheduler_installed());
+        assert!(!scheduler.is_scheduler_ready());
+        assert!(!scheduler.is_scheduler_path_matched(dummy_path));
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::None);
+        assert_eq!(scheduler.get_scheduler_executable_path(), None);
+
+        // JobStore登録や実行を阻害しないよう、no-opとして成功すること
+        assert!(scheduler.ensure_scheduler_installed(dummy_path).is_ok());
+        assert!(scheduler.uninstall_scheduler().is_ok());
+        assert!(scheduler.unregister_job("job-1").is_ok());
+    }
+}
+

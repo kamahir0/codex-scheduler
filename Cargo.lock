@@ -422,7 +422,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "codex-scheduler-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "clap",
@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "codex-scheduler-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "codex-scheduler-gui"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "codex-scheduler-core",

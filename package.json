@@ -13,7 +13,7 @@
     "release:minor": "cargo xtask release minor",
     "release:patch": "cargo xtask release patch"
   },
-  "version": "0.5.0",
+  "version": "0.5.1",
   "workspaces": [
     "apps/gui"
   ]

@@ -394,12 +394,6 @@ impl SchedulerBackend for WindowsTaskScheduler {
             return false;
         }
 
-        // State Matrix ST-04: Abnormal exit code check
-        // In Task Scheduler, 0 is S_OK, 0x00041301 is running, 0x00041325 is task ready
-        if task.last_result != 0 && task.last_result != 0x00041301 && task.last_result != 0x00041325 {
-            return false;
-        }
-
         // Arguments must contain canonical --scheduler-tick
         task.arguments.as_deref() == Some(TICK_ARG)
     }

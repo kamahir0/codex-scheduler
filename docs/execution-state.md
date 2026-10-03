@@ -1,7 +1,7 @@
 # Development State
 
 Stage: decision-required
-Candidate: f555f4478906c9cd3e1ce2cb6c21b52815778590
+Candidate: 105a197abb0a348a7b98a97f40617107a32738d9
 Work base: 6d5b2b496a596cb9498356172ad64d5f9b37963a
 
 ## Active work

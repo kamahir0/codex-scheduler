@@ -149,11 +149,24 @@ export async function pickDirectory(): Promise<string | null> {
         directory: true,
         multiple: false,
       });
-      return typeof selected === "string" ? selected : null;
+      if (typeof selected === "string") {
+        return selected;
+      }
+      const raw: unknown = selected;
+      if (Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "string") {
+        return raw[0];
+      }
+      return null;
     } catch (e) {
       console.warn("Failed to open native directory picker:", e);
       return null;
     }
+  }
+  if (typeof window !== "undefined" && window.prompt) {
+    return window.prompt(
+      "作業ディレクトリのパスを入力してください（ブラウザ環境用）:",
+      "/Users/mahirohiratsuka/develop/my-project"
+    );
   }
   return null;
 }

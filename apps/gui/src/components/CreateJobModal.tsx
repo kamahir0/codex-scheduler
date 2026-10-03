@@ -55,9 +55,14 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
   }, [open, systemInfo, form]);
 
   const handleBrowseFolder = async () => {
-    const selected = await pickDirectory();
-    if (selected) {
-      form.setFieldValue("cwd", selected);
+    try {
+      const selected = await pickDirectory();
+      if (selected) {
+        form.setFieldValue("cwd", selected);
+        form.validateFields(["cwd"]).catch(() => {});
+      }
+    } catch (e) {
+      console.error("フォルダ選択に失敗しました:", e);
     }
   };
 
@@ -147,19 +152,28 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
 
         <Form.Item
           label="作業ディレクトリ (Project Working Directory)"
-          name="cwd"
-          rules={[{ required: true, message: "作業ディレクトリを指定してください" }]}
+          required
           extra="Codexがプロジェクトのコンテキストを正しく参照するためのフォルダパスです。"
         >
-          <Space style={{ width: "100%" }}>
-            <Input
-              style={{ width: "420px" }}
-              placeholder="/Users/name/develop/my-project"
-            />
-            <Button icon={<FolderOpen size={16} />} onClick={handleBrowseFolder}>
+          <Space.Compact style={{ width: "100%" }}>
+            <Form.Item
+              name="cwd"
+              noStyle
+              rules={[{ required: true, message: "作業ディレクトリを指定してください" }]}
+            >
+              <Input
+                style={{ width: "calc(100% - 80px)" }}
+                placeholder="/Users/name/develop/my-project"
+              />
+            </Form.Item>
+            <Button
+              icon={<FolderOpen size={16} />}
+              onClick={handleBrowseFolder}
+              style={{ width: "80px" }}
+            >
               参照
             </Button>
-          </Space>
+          </Space.Compact>
         </Form.Item>
 
         <Form.Item

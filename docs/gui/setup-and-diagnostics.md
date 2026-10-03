@@ -14,9 +14,9 @@ Status: Approved
 
 1. **Codex CLI の存在確認**:
    - `codex` コマンドが PATH または標準ディレクトリから解決可能か。
-2. **OSスケジューラ権限確認**:
+2. **OSスケジューラ権限・健全性確認**:
    - macOS: `~/Library/LaunchAgents/` へのアクセスおよび書き込みが可能か。
-   - Windows: Task Scheduler コマンドへのアクセスが可能か。
+   - Windows: Task Scheduler サービスへのアクセスおよびタスクの照会が可能か（詳細は OS-SCHED-002 参照）。
 
 ### DIAG-UI-002: 未検出時のアラートバナー表示
 

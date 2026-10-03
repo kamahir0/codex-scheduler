@@ -177,3 +177,5 @@ Desktop アプリと standalone CLI は、両方インストールされてい�
   2. CLI 単体で先に利用していた環境（CLI 所有）に Desktop アプリを後からインストールして起動した場合、Desktop アプリが安全に所有権を引き継ぎ（Takeover）、Desktop アプリ経由でのヘッドレス定期実行へ自動移行します。
   3. Desktop 所有時に CLI から `uninstall-scheduler` を実行しても、Desktop アプリの定期実行が不意に停止しないよう安全に保護されます（アンインストールは拒否され、エラーコード `desktop_owner_protected` が返されます）。
 
+詳細な所有権遷移マトリクスや規範契約については、[`docs/specs/cli.md`](specs/cli.md)（`CLI-CMD-004`）および [`docs/specs/os-scheduler.md`](specs/os-scheduler.md)（`OS-SCHED-002`, `OS-SCHED-006`）を参照してください。
+

@@ -45,70 +45,39 @@
 
 ---
 
-## インストール手順
+## インストール & クイックスタート
 
-[GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) より、お使いのOSに合わせたインストーラをダウンロードしてください。
+[GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) より、お使いの環境に合わせたパッケージをダウンロードしてください。
 
-### 配布パッケージ一覧（4種類）
+### 配布パッケージ一覧
 
 | 種別 | OS / アーキテクチャ | 配布ファイル | 用途 |
 | :--- | :--- | :--- | :--- |
-| **Desktop GUI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-<version>-macos-arm64.dmg` | GUIデスクトップアプリ |
+| **Desktop GUI** | macOS (Apple Silicon) | `Codex-Scheduler-<version>-macos-arm64.dmg` | GUIデスクトップアプリ |
 | **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ |
-| **Standalone CLI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLI実行ファイル (`codex-scheduler`) |
-| **Standalone CLI** | Windows (64-bit) | `Codex-Scheduler-CLI-<version>-windows-x64.exe` | 単体CLI実行ファイル (`codex-scheduler.exe`) |
+| **Standalone CLI** | macOS (Apple Silicon) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLIバイナリ (`codex-scheduler`) |
+| **Standalone CLI** | Windows (64-bit) | `Codex-Scheduler-CLI-<version>-windows-x64.exe` | 単体CLIバイナリ (`codex-scheduler.exe`) |
 
 ### 前提条件
-本スケジューラはバックグラウンドで `codex` コマンドを実行します。端末に OpenAI Codex CLI がインストールされていることを確認してください。
+本スケジューラはバックグラウンドで `codex` コマンドを実行します。システムに OpenAI Codex CLI がインストールされていることを確認してください。
 ```bash
 codex --version
 ```
 
-### macOS の場合
-1. ダウンロードした `.dmg` ファイルを開き、`Codex Scheduler.app` を **Applications（アプリケーション）** フォルダへドラッグ＆ドロップします。
-2. アプリケーションフォルダから起動します。
-> [!NOTE]
-> 初回起動時に「開発元を確認できないため開けません」と表示された場合は、Finder でアプリを **右クリック（Control + クリック）して「開く」** を選択するか、ターミナルで以下を実行して隔離属性を解除してください：
-> ```bash
-> xattr -d com.apple.quarantine /Applications/Codex\ Scheduler.app
-> ```
-
-### Windows の場合
-1. ダウンロードした `.exe` ファイルを実行し、ウィザードに従ってインストールします。
-> [!NOTE]
-> Microsoft Defender SmartScreen が表示された場合は、「詳細情報」をクリックしてから「実行」を選択してください。
-
-### Standalone CLI の場合 (`codex-scheduler`)
-Releases からバイナリをダウンロードし、PATH の通った場所に配置します：
-
-**macOS:**
+### CLI 利用例 (macOS / Windows 共通)
 ```bash
-chmod +x Codex-Scheduler-CLI-*-macos-arm64
-mv Codex-Scheduler-CLI-*-macos-arm64 ~/.local/bin/codex-scheduler
-```
-
-**Windows (PowerShell):**
-```powershell
-New-Item -ItemType Directory -Force -Path "$HOME\.local\bin"
-Move-Item Codex-Scheduler-CLI-*-windows-x64.exe "$HOME\.local\bin\codex-scheduler.exe"
-# $HOME\.local\bin をユーザー環境変数 PATH に追加
-```
-
-**利用例 (macOS / Windows 共通):**
-```bash
-# ジョブの登録例（2時間後に再開）
+# ジョブの登録（2時間後に再開）
 codex-scheduler schedule --session-id "sess-123" --cwd "/path/to/project" --at "+120"
 
-# 一覧表示
+# 登録ジョブ一覧の表示
 codex-scheduler list --json
 
-# システム & スケジューラ状態確認
+# スケジューラ稼働状態・所有権の確認
 codex-scheduler status
 ```
 
-※ Desktop アプリと CLI を同一環境に導入した場合でも、`~/.codex-scheduler/jobs.json` のジョブデータは共有され、OS の常設スケジューラ（macOS: LaunchAgent / Windows: Task Scheduler）は常に1つに保たれます（Desktop所有が優先）。
-
-より詳しい権限仕様やセットアップ手順については [インストール & 権限セットアップガイド](docs/setup-guide.md) をご覧ください。
+> [!TIP]
+> 初回起動時のOS警告対処（macOS Gatekeeper / Windows SmartScreen）、PATH設定、スケジューラ常設登録の仕組み、およびトラブルシューティングの詳細は **[セットアップガイド](docs/setup-guide.md)** をご覧ください。
 
 ---
 

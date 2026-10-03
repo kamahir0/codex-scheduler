@@ -21,8 +21,8 @@ CLI はデスクトップ環境への依存を持たず単独で予約・実行�
    - ユーザーが実行する正式な CLI コマンド名は `codex-scheduler` でなければならない（MUST）。
    - クレート名（`codex-scheduler-cli`）にかかわらず、公開バイナリ名は `codex-scheduler` とする（Cargo `[[bin]]` 定義）。
 2. **独立した実行形態**:
-   - CLI は単一の standalone バイナリとして動作し、Desktop GUI アプリケーション（`Codex Scheduler.app` 等）のインストールを必須としてはならない（MUST NOT）。
-   - ただし、常設スケジューラ自動登録（`install-scheduler` / 自動 ensure によるバックグラウンド定期実行）の正式サポートプラットフォームは、現時点で **macOS (LaunchAgent)** のみとする。Windows 環境における CLI コマンドコントラクト（ジョブ一覧・作成・手動 tick・JSON 出力等）は cross-platform に利用可能であるが、Windows における常設OSスケジューラ（Task Scheduler）連携は現時点で未対応（未実装、次期 Objective 候補）であり、自動バックグラウンド実行はサポートされない（現行バージョンでは手動 tick またはアプリ起動中実行のみ利用可能）。
+   - CLI は単一の standalone バイナリとして動作し、Desktop GUI アプリケーション（`Codex Scheduler.app` や Windows インストーラ等）のインストールを必須としてはならない（MUST NOT）。
+   - macOS（LaunchAgent）および Windows（Task Scheduler 2.0 COM API）の双方で、常設スケジューラ自動登録（`install-scheduler` / 自動 ensure によるバックグラウンド定期実行）を正式サポートする（詳細は CLI-CMD-004 参照）。
 3. **共有コアの利用**:
    - ジョブモデル、バリデーション、排他制御、リトライ判定、Codex アダプタ呼出、およびスケジューラ tick 実行は、すべて `codex-scheduler-core` のロジックを一元的に使用しなければならない（MUST）。
 

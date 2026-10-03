@@ -85,8 +85,8 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
         <Descriptions.Item label="スケジューラ実行方式">
           <Tag color="purple">
             {systemInfo.os === "macos"
-              ? "シングル実行ファイル・ヘッドレスモード (Gatekeeper 対策済)"
-              : "アプリ起動中管理 (常設OSスケジューラ未対応)"}
+              ? "シングル実行ファイル・ヘッドレスモード (LaunchAgent / Gatekeeper 対策済)"
+              : "シングル実行ファイル・ヘッドレスモード (Task Scheduler 連携)"}
           </Tag>
         </Descriptions.Item>
         <Descriptions.Item label="スケジューラ実行パス">

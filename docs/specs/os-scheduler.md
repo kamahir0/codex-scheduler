@@ -108,7 +108,7 @@ OSスケジューラ連携におけるジョブ実行予定日時（`scheduled_a
 2. **期限到来条件（Due Condition）**:
    - ジョブが実行対象（Due）となる条件は `scheduled_at <= current_time` であり、かつステータスが `Scheduled` または `Retrying` であること（MUST）。
 3. **定期ポーリング起動**:
-   - macOS `launchd`（`StartInterval: 60`）等の定期ポーリング tick により、期限到来したジョブが検出・抽出（claim）される（Windows では将来の Task Scheduler 連携またはアプリ起動中タイマー / 手動 tick により検出）。
+   - macOS `launchd`（`StartInterval: 60`）または Windows Task Scheduler（1分間隔反復トリガー）の定期ポーリング tick により、期限到来したジョブが検出・抽出（claim）される。
    - 期限到来したジョブは、到来時刻以降に最初に到来するスケジューラ tick において実行対象となる（MUST）。
 4. **通常遅延と追加遅延**:
    - 定期ポーリング間隔が60秒であるため、通常運用時における実行開始は `scheduled_at` 到来後 0〜約60秒以内となる（SHOULD）。

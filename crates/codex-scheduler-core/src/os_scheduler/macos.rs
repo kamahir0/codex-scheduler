@@ -37,6 +37,30 @@ impl MacOsLaunchdScheduler {
             .join(format!("{}{}.plist", LEGACY_PLIST_PREFIX, job_id))
     }
 
+    fn escape_xml_text(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len());
+        for ch in value.chars() {
+            match ch {
+                '&' => escaped.push_str("&amp;"),
+                '<' => escaped.push_str("&lt;"),
+                '>' => escaped.push_str("&gt;"),
+                '"' => escaped.push_str("&quot;"),
+                '\'' => escaped.push_str("&apos;"),
+                _ => escaped.push(ch),
+            }
+        }
+        escaped
+    }
+
+    fn unescape_xml_text(value: &str) -> String {
+        value
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+    }
+
     // WHY: LaunchAgent must execute the app bundle's main executable with `--scheduler-tick`
     //      instead of a separate CLI worker binary, ensuring Gatekeeper authorization granted
     //      by the user to the GUI app covers background execution under ad-hoc distribution.
@@ -44,14 +68,16 @@ impl MacOsLaunchdScheduler {
     //              and breaks scheduled runs even when GUI app was authorized.
     // EVIDENCE: docs/adr/0003-macos-single-executable-headless-scheduler.md, OS-SCHED-001, DELIVERY-BUNDLE-002
     pub fn generate_scheduler_plist_content(app_executable_path: &Path) -> String {
-        let app_str = app_executable_path.to_string_lossy();
-        let home_dir = dirs::home_dir()
+        let app_str = Self::escape_xml_text(&app_executable_path.to_string_lossy());
+        let home_dir_raw = dirs::home_dir()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|| "/Users".to_string());
-        let path_env = format!(
+        let path_env_raw = format!(
             "{}/.local/bin:{}/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            home_dir, home_dir
+            home_dir_raw, home_dir_raw
         );
+        let home_dir = Self::escape_xml_text(&home_dir_raw);
+        let path_env = Self::escape_xml_text(&path_env_raw);
 
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -156,7 +182,7 @@ impl MacOsLaunchdScheduler {
         if exe_str.is_empty() {
             None
         } else {
-            Some(PathBuf::from(exe_str))
+            Some(PathBuf::from(Self::unescape_xml_text(exe_str)))
         }
     }
 
@@ -168,7 +194,8 @@ impl MacOsLaunchdScheduler {
 
         let entries = fs::read_dir(&self.launch_agents_dir)?;
 
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry?;
             let path = entry.path();
             if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                 if file_name.starts_with(LEGACY_PLIST_PREFIX) && file_name.ends_with(".plist") {
@@ -325,12 +352,19 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
         if !plist_path.exists() {
             return false;
         }
-        if let Ok(content) = fs::read_to_string(&plist_path) {
-            let path_str = app_executable_path.to_string_lossy();
-            content.contains(&*path_str) && content.contains("<string>--scheduler-tick</string>")
-        } else {
-            false
+
+        let content = match fs::read_to_string(&plist_path) {
+            Ok(content) => content,
+            Err(_) => return false,
+        };
+        if !content.contains("<string>--scheduler-tick</string>") {
+            return false;
         }
+
+        matches!(
+            Self::extract_executable_path_from_plist(&content),
+            Some(path) if path == app_executable_path
+        )
     }
 
     fn uninstall_scheduler(&self) -> Result<(), SchedulerError> {
@@ -373,6 +407,41 @@ mod tests {
         assert!(plist.contains("<key>EnvironmentVariables</key>"));
         assert!(plist.contains("<key>PATH</key>"));
         assert!(plist.contains("<key>HOME</key>"));
+    }
+
+    #[test]
+    fn test_scheduler_plist_xml_special_character_round_trip() {
+        let app_path = Path::new(
+            "/Applications/AI & Dev <Nightly>/Codex \"Scheduler\" 'Test'.app/Contents/MacOS/codex-scheduler-gui",
+        );
+        let plist = MacOsLaunchdScheduler::generate_scheduler_plist_content(app_path);
+
+        assert!(plist.contains("AI &amp; Dev &lt;Nightly&gt;"));
+        assert!(plist.contains("Codex &quot;Scheduler&quot; &apos;Test&apos;.app"));
+        assert!(!plist.contains("AI & Dev <Nightly>"));
+
+        let extracted = MacOsLaunchdScheduler::extract_executable_path_from_plist(&plist);
+        assert_eq!(extracted, Some(app_path.to_path_buf()));
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-xml-path-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let scheduler = MacOsLaunchdScheduler::with_dir(temp_dir.clone());
+        fs::write(scheduler.scheduler_plist_path(), plist).unwrap();
+        assert!(scheduler.is_scheduler_path_matched(app_path));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_xml_text_escape_unescape_preserves_literal_entities() {
+        let raw = "/Applications/A &amp; B & <C> \"D\" 'E'.app";
+        let escaped = MacOsLaunchdScheduler::escape_xml_text(raw);
+        assert_eq!(
+            escaped,
+            "/Applications/A &amp;amp; B &amp; &lt;C&gt; &quot;D&quot; &apos;E&apos;.app"
+        );
+        assert_eq!(MacOsLaunchdScheduler::unescape_xml_text(&escaped), raw);
     }
 
     #[test]

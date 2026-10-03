@@ -1,181 +1,240 @@
-# インストール & 権限セットアップガイド
+# インストールガイド
 
 GitHub Releases からダウンロードして利用を開始するまでの手順書です。
 
 ---
 
-## 1. ダウンロード
+## 最初に確認（前提条件）
 
-[GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) の最新リリース（Latest Release）ページから、ご使用のOSに合ったインストーラをダウンロードします。
+Codex Scheduler は、指定時刻にバックグラウンドで OpenAI 公式の `codex` コマンドを実行します。  
+お使いのパソコンに **OpenAI Codex CLI** がインストールされている必要があります。
 
-### 配布パッケージ一覧（4種類）
-
-| 種別 | OS / アーキテクチャ | ダウンロードファイル | 説明 |
-| :--- | :--- | :--- | :--- |
-| **Desktop GUI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-<version>-macos-arm64.dmg` | GUIデスクトップアプリ（単体で予約実行完結） |
-| **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ（単体で予約実行完結） |
-| **Standalone CLI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLI実行ファイル（GUI不要、単体で予約実行完結） |
-| **Standalone CLI** | Windows (64-bit) | `Codex-Scheduler-CLI-<version>-windows-x64.exe` | 単体CLI実行ファイル（GUI不要、単体で予約実行完結） |
-
----
-
-## 2. インストールと初回起動手順
-
-### macOS の場合
-
-1. ダウンロードした `.dmg` ファイルをダブルクリックしてマウントします。
-2. 表示されたウィンドウで、`Codex Scheduler.app` を **Applications（アプリケーション）** フォルダへドラッグ＆ドロップします。
-3. Applications フォルダから `Codex Scheduler.app` を起動します。
-
-#### 【重要】「開発元を確認できないため開けません」と表示された場合
-公的Apple証明書での公証（Notarization）前のオープンソースビルドの場合、macOS Gatekeeper により起動がブロックされる場合があります。以下のいずれかで安全に起動できます。
-
-* **方法 A（推奨・GUI操作）**:
-  1. Finderの「アプリケーション」フォルダで `Codex Scheduler.app` を **右クリック（Controlキーを押しながらクリック）** します。
-  2. メニューから **「開く」** を選択します。
-  3. 警告ダイアログに「開く」ボタンが表示されるので、それをクリックします（次回以降は通常起動できます）。
-
-* **方法 B（ターミナル操作）**:
-  ターミナルで以下のコマンドを実行して隔離属性（quarantine）を解除します：
-  ```bash
-  xattr -d com.apple.quarantine /Applications/Codex\ Scheduler.app
-  ```
-
-#### 権限について & 完全無料・シングル実行ファイルアーキテクチャ
-- **完全無料配布方針（Apple Developer登録不要）**:
-  - 本プロジェクトは、すべての開発者が完全無料で利用・配布できるよう、Apple Developer Program の有償アカウントを必須とせず、ad-hoc 署名（`signingIdentity: "-"`）でビルドされています。
-- **1 App / 1 Executable / 2 Modes による Gatekeeper 根本対策**:
-  - バックグラウンドスケジューラ（LaunchAgent）は、外部の別バイナリではなく、`Codex Scheduler.app` 内のメイン実行ファイル自身をヘッドレスモード（`--scheduler-tick`）で起動します。
-  - そのため、**ユーザーが初回起動時に `Codex Scheduler.app` を許可（Control+クリックで「開く」）するだけで、バックグラウンド実行もすべて同一の承認済みバイナリとして動作します**。外部の `codex-scheduler-cli` に対する追加の Gatekeeper 警告やブロックが発生することはありません。
-- **バックグラウンド通知の最小化（1 App = 1 LaunchAgent）**:
-  - macOS 13 (Ventura) 以降、新しい LaunchAgent が登録されるたびに「バックグラウンド項目が追加されました」と通知されます。
-  - Codex Scheduler では、ジョブを1件追加するたびに LaunchAgent を増設するのではなく、**アプリ専用の単一常設 LaunchAgent（`dev.codexscheduler.scheduler.plist`）が内部ですべてのジョブ（待機・リトライ・完了）を管理・定期実行（1分間隔）** します（※ジョブは指定時刻以降、次回の定期チェック時に実行されるため、通常0〜約60秒の遅延があります）。
-  - 初回起動時（またはアプリ移動・更新時）に1回だけパスが登録・確認され、以後のジョブ追加・編集・削除で通知が出ることはありません。
-- **スケジューラ登録権限**: ユーザー単位の LaunchAgent（`~/Library/LaunchAgents/`）を使用するため、管理者権限（sudo）は不要です。
-- **プロジェクトフォルダへのアクセス**: 初回に作業ディレクトリを参照する際、macOSから「フォルダへのアクセスを求めています」とダイアログが出た場合は「許可」を選択してください。
-
----
-
-### Windows の場合
-
-1. ダウンロードした `.exe` ファイルをダブルクリックして実行します。
-2. 画面の指示に従ってインストールを完了します。
-
-#### 【重要】「Windows によって PC が保護されました」と表示された場合
-Microsoft Defender SmartScreen が表示された場合：
-1. ダイアログ内の **「詳細情報」** をクリックします。
-2. 表示された **「実行」** ボタンをクリックします。
-
-#### Windows Task Scheduler 常設連携について
-- Windows Desktop アプリは、起動時または初回ジョブ登録時に、OS ネイティブの Task Scheduler へ単一の常設サービス（`CodexScheduler_Service`）を自動登録します。
-- アプリを終了しても、指定時刻以降にバックグラウンドで自動的に `codex-scheduler-gui.exe --scheduler-tick` が実行され、予約ジョブが処理されます。
-- 現在のユーザー権限（LeastPrivilege, InteractiveToken）で登録されるため、UAC 管理者権限の昇格確認は不要です。
-
----
-
-## 3. 前提条件の確認（Codex CLI）
-
-本スケジューラは、深夜にバックグラウンドで `codex exec resume <session_id> "continue"` を実行します。
-そのため、お使いの端末で **OpenAI Codex CLI** が利用可能である必要があります。
-
-ターミナルまたはPowerShellで以下を実行し、正常に応答することを確認してください：
+ターミナル（macOS）または PowerShell（Windows）で以下を実行してください：
 ```bash
 codex --version
 ```
-
-もし「command not found」となる場合は、Codex のセットアップを確認し、シェル環境変数（PATH）に `codex` の実行パスが含まれていることを確認してください。
-（一般的な配置場所: `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.npm-global/bin` 等）
+- **成功**: `codex-cli 0.x.x` のようにバージョンが表示されます。
+- **失敗**: `command not found` または `用語 'codex' は認識されません` と表示される場合は、OpenAI 公式の案内に従って先に Codex CLI をインストールしてください。
 
 ---
 
-## 4. Standalone CLI (`codex-scheduler`) のセットアップ & 利用
+## どれを使う？（Desktop版 vs CLI版）
 
-GUI不要の環境やCI/CD、スクリプト自動化向けに、単一バイナリの CLI ディストリビューションを提供しています。
+| 種別 | こんな方におすすめ | 特徴 |
+| :--- | :--- | :--- |
+| **Desktop版** | マウス操作で視覚的に管理したい方、設定を簡単に行いたい方（**迷ったらこちら**） | 直感的なGUI画面、ワンクリックでジョブ管理、OSスケジューラも自動構成 |
+| **CLI版** | ターミナルやスクリプトから使いたい方、サーバーやCI環境で使いたい方 | 単一バイナリ、GUI不要で軽量、コマンドラインで全機能を操作可能 |
 
-### インストール手順
+> [!NOTE]
+> - CLI版はDesktop版をインストールしなくても単体で完結して動作します。
+> - 両方をインストールして併用することも可能です（ジョブ情報は自動で共有されます）。
 
-#### macOS の場合
-1. Releases から `Codex-Scheduler-CLI-<version>-macos-arm64` をダウンロードします。
-2. 実行権限を付与し、PATHの通った場所（例: `/usr/local/bin` や `~/.local/bin`）へ配置します：
-   ```bash
-   chmod +x Codex-Scheduler-CLI-*-macos-arm64
-   mv Codex-Scheduler-CLI-*-macos-arm64 ~/.local/bin/codex-scheduler
-   ```
-3. バージョンを確認します：
-   ```bash
-   codex-scheduler --version
-   ```
+### 配布ファイル一覧
 
-#### Windows の場合
-1. Releases から `Codex-Scheduler-CLI-<version>-windows-x64.exe` をダウンロードします。
-2. 任意のフォルダ（推奨: `%USERPROFILE%\.local\bin`）へ配置し、`codex-scheduler.exe` にリネームします：
-   ```powershell
-   New-Item -ItemType Directory -Force -Path "$HOME\.local\bin"
-   Move-Item Codex-Scheduler-CLI-*-windows-x64.exe "$HOME\.local\bin\codex-scheduler.exe"
-   ```
-3. `$HOME\.local\bin` がシステムの環境変数 PATH に含まれていることを確認します。
-4. バージョンを確認します：
-   ```powershell
-   codex-scheduler --version
-   ```
+[GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) の最新リリースからダウンロードしてください。
 
-#### 【重要】macOS Gatekeeper で実行拒否された場合（ブラウザダウンロード時）
-Webブラウザ経由でダウンロードした場合、macOSにより隔離属性（`com.apple.quarantine`）が付与され、初回実行時に「開発元を確認できないため開けません」または「悪質なソフトウェア...」と Gatekeeper によりブロックされることがあります。
+| 種別 | OS / アーキテクチャ | 配布ファイル名 |
+| :--- | :--- | :--- |
+| **Desktop版** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-<version>-macos-arm64.dmg` |
+| **Desktop版** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` |
+| **CLI版** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` |
+| **CLI版** | Windows (64-bit) | `Codex-Scheduler-CLI-<version>-windows-x64.exe` |
 
-本プロジェクトのセキュリティ原則に従い、**CLI 自身による隔離属性の自動解除は行いません**。ブロックされた場合は、ユーザー自身がターミナルで以下のコマンドを明示的に実行して隔離属性を解除してください：
-```bash
-xattr -d com.apple.quarantine ~/.local/bin/codex-scheduler
+---
+
+## Windows Desktop版のインストール
+
+### 手順
+1. Releases から `Codex-Scheduler-<version>-windows-x64.exe` をダウンロードします。
+2. ダウンロードした `.exe` をダブルクリックしてインストーラを実行します。
+3. 画面の指示に従ってインストールを完了し、アプリを起動します。
+
+#### 「Windows によって PC が保護されました」と表示された場合
+Microsoft Defender SmartScreen が表示された場合は、以下を行ってください：
+1. ダイアログ内の **「詳細情報」** をクリックします。
+2. 表示された **「実行」** ボタンをクリックします。
+
+### 成功の確認
+- アプリが起動し、画面上部に「Codex CLI 未検出」の警告バナーが表示されていないこと。
+- 画面右上の **「新規スケジュール」** ボタンをクリックしてジョブ登録画面が表示されること。  
+※ バックグラウンドスケジューラ（Task Scheduler）はジョブ登録時に自動設定されるため、追加の設定作業は不要です。
+
+---
+
+## macOS Desktop版のインストール
+
+### 手順
+1. Releases から `Codex-Scheduler-<version>-macos-arm64.dmg` をダウンロードします。
+2. ダウンロードした `.dmg` をダブルクリックして開きます。
+3. 表示されたウィンドウで、`Codex Scheduler.app` を **Applications（アプリケーション）** フォルダへドラッグ＆ドロップします。
+4. Applications フォルダから `Codex Scheduler.app` を起動します。
+
+#### 「開発元を確認できないため開けません」と表示された場合
+macOS Gatekeeper によるセキュリティ確認が表示された場合は、以下のいずれかで起動できます：
+- **GUI操作（推奨）**:
+  1. Finderの「アプリケーション」フォルダで `Codex Scheduler.app` を **右クリック（または Control キーを押しながらクリック）** します。
+  2. メニューから **「開く」** を選択します。
+  3. 警告ダイアログが表示されるので、**「開く」** をクリックします（次回以降は通常起動できます）。
+- **ターミナル操作**:
+  ```bash
+  xattr -d com.apple.quarantine "/Applications/Codex Scheduler.app"
+  ```
+
+### 成功の確認
+- アプリが起動し、画面上部に「Codex CLI 未検出」の警告バナーが表示されていないこと。
+- 画面右上の **「新規スケジュール」** ボタンをクリックしてジョブ登録画面が表示されること。  
+※ バックグラウンドスケジューラ（LaunchAgent）はアプリ起動・ジョブ登録時に自動設定されるため、追加の設定作業は不要です。
+
+---
+
+## Windows CLI版のインストール
+
+### 手順（PowerShell で実行）
+以下のスクリプトを PowerShell にコピー＆ペーストして実行してください。ダウンロードフォルダにあるファイルを `%USERPROFILE%\.local\bin` に配置し、PATH を通します。
+
+```powershell
+# 1. 保存先フォルダを作成
+New-Item -ItemType Directory -Force -Path "$HOME\.local\bin"
+
+# 2. ダウンロードした実行ファイルを配置（ダウンロードフォルダにある場合）
+Move-Item "$HOME\Downloads\Codex-Scheduler-CLI-*-windows-x64.exe" "$HOME\.local\bin\codex-scheduler.exe"
+
+# 3. ユーザー環境変数 PATH に追加（現在のセッションおよび永続設定）
+$bin = "$HOME\.local\bin"
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$parts = @($userPath -split ';' | Where-Object { $_ })
+if ($parts -notcontains $bin) {
+    [Environment]::SetEnvironmentVariable("Path", (($parts + $bin) -join ';'), "User")
+}
+if ($env:Path -split ';' -notcontains $bin) {
+    $env:Path = "$bin;$env:Path"
+}
+
+# 4. バージョン確認
+codex-scheduler --version
+
+# 5. OSバックグラウンドスケジューラの常設登録
+codex-scheduler install-scheduler
 ```
-※ アプリやCLIバイナリの更新時、または macOS のアップデート時には、再度明示的な解除が必要となる場合があります（更新後も永久に再許可不要であることは保証されません）。
 
-### 主なコマンド
-- **ジョブの新規予約**:
-  ```bash
-  # 2時間後に再開
-  codex-scheduler schedule --session-id "sess-123" --cwd "/path/to/project" --at "+120"
+> [!NOTE]
+> スケジューラの登録（`install-scheduler`）は現在のユーザー権限で実行されるため、管理者権限（UAC昇格）は不要です。
 
-  # ISO 8601 時刻指定
-  codex-scheduler schedule --session-id "sess-123" --cwd "/path/to/project" --at "2026-10-04T02:00:00Z"
-  ```
-- **ジョブ一覧表示**:
-  ```bash
-  codex-scheduler list
-  codex-scheduler list --json
-  ```
-- **ジョブ詳細・履歴確認**:
-  ```bash
-  codex-scheduler show <job-id>
-  ```
-- **ジョブのキャンセル / 削除**:
-  ```bash
-  codex-scheduler cancel <job-id>
-  codex-scheduler delete <job-id>
-  ```
-- **システム & スケジューラステータス確認**:
+### 成功の確認
+以下のコマンドを実行します：
+```powershell
+codex-scheduler status --json
+```
+出力された JSON で以下が確認できればセットアップ完了です：
+- `"installed": true`（OSスケジューラに登録されている）
+- `"ready": true`（実行準備完了）
+- `"target_exists": true`（実行ファイルが存在する）
+- `"owner_target_valid": true`（登録パスが正常）  
+※ `"owner"` は通常 `"cli"` となります（Desktop版を併用している場合は `"desktop"` になることがありますが正常です）。
+
+---
+
+## macOS CLI版のインストール
+
+### 手順（ターミナルで実行）
+以下のスクリプトをターミナルにコピー＆ペーストして実行してください。ダウンロードフォルダにあるファイルを `~/.local/bin` に配置し、実行権限の付与とセキュリティ属性の解除を行います。
+
+```bash
+# 1. 保存先フォルダを作成
+mkdir -p ~/.local/bin
+
+# 2. ダウンロードフォルダから配置して実行権限を付与
+mv ~/Downloads/Codex-Scheduler-CLI-*-macos-arm64 ~/.local/bin/codex-scheduler
+chmod +x ~/.local/bin/codex-scheduler
+
+# 3. macOS Gatekeeper（セキュリティ警告）を解除
+xattr -d com.apple.quarantine ~/.local/bin/codex-scheduler 2>/dev/null || true
+
+# 4. PATH を通す（~/.zshrc に未登録の場合）
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
+# 5. バージョン確認
+codex-scheduler --version
+
+# 6. OSバックグラウンドスケジューラの常設登録
+codex-scheduler install-scheduler
+```
+
+### 成功の確認
+以下のコマンドを実行します：
+```bash
+codex-scheduler status --json
+```
+出力された JSON で以下が確認できればセットアップ完了です：
+- `"installed": true`（OSスケジューラに登録されている）
+- `"ready": true`（実行準備完了）
+- `"target_exists": true`（実行ファイルが存在する）
+- `"owner_target_valid": true`（登録パスが正常）  
+※ `"owner"` は通常 `"cli"` となります（Desktop版を併用している場合は `"desktop"` になることがありますが正常です）。
+
+---
+
+## CLI版の主なコマンド
+
+```bash
+# ジョブの新規予約（2時間後に再開）
+codex-scheduler schedule --session-id "sess-123" --cwd "/path/to/project" --at "+120"
+
+# ジョブの新規予約（日時指定・ISO 8601形式）
+codex-scheduler schedule --session-id "sess-123" --cwd "/path/to/project" --at "2026-10-04T02:00:00Z"
+
+# 登録ジョブ一覧の表示
+codex-scheduler list
+codex-scheduler list --json
+
+# ジョブの詳細・実行ログの確認
+codex-scheduler show <job-id>
+
+# ジョブのキャンセル / 削除
+codex-scheduler cancel <job-id>
+codex-scheduler delete <job-id>
+
+# スケジューラの稼働状態・所有権の確認
+codex-scheduler status
+codex-scheduler status --json
+```
+
+---
+
+## Desktop版とCLI版を両方使う場合
+
+Desktop版とCLI版は、同一のPC上で安心して併用できます。
+
+- **ジョブデータの自動共有**:  
+  ジョブ情報は共通の保存先（`~/.codex-scheduler/jobs.json`）で管理されます。CLIで登録したジョブはDesktop画面の一覧に即座に表示され、Desktopからキャンセルすることも可能です。
+- **OSスケジューラの自動管理**:  
+  バックグラウンドスケジューラはPC全体で1つだけ登録され、重複して二重起動することはありません。両方インストールされている環境ではDesktop版が自動的にスケジューラを管理します。
+
+※ より詳しい内部仕様や権限契約については、[`docs/specs/cli.md`](specs/cli.md) および [`docs/specs/os-scheduler.md`](specs/os-scheduler.md) をご覧ください。
+
+---
+
+## 困ったとき（トラブルシューティング）
+
+### 1. `codex` コマンドが見つからない
+- **症状**: Desktop画面に「Codex CLI 未検出」と表示される、または `codex --version` でエラーになる。
+- **対策**: OpenAI 公式の案内に従って Codex CLI をインストールしてください。また、ターミナルで `which codex`（macOS）や `Get-Command codex`（PowerShell）を実行し、実行ファイルが存在するディレクトリが環境変数 PATH に含まれているか確認してください。
+
+### 2. macOS で「開発元を確認できないため開けません」と出る
+- **対策**:
+  - **Desktop版**: Finder で `Codex Scheduler.app` を右クリック（Control+クリック）し、「開く」を選択してください。
+  - **CLI版**: ターミナルで `xattr -d com.apple.quarantine ~/.local/bin/codex-scheduler` を実行してください。
+
+### 3. Windows で「Windows によって PC が保護されました」と出る
+- **対策**: SmartScreen 画面の「詳細情報」をクリックし、「実行」を選択してください。
+
+### 4. スケジューラが正常に動いているか確認したい
+- **対策**:
+  ターミナルまたは PowerShell で以下を実行してください：
   ```bash
   codex-scheduler status
-  codex-scheduler status --json
   ```
-- **OSスケジューラ常設サービスの登録 / アンインストール**:
-  ```bash
-  codex-scheduler install-scheduler
-  codex-scheduler uninstall-scheduler
-  ```
-
----
-
-## 5. Desktop と CLI の共存運用（所有権モデル）
-
-Desktop アプリと standalone CLI は、両方インストールされている環境でも安全に共存できます。
-
-- **共有ジョブストア**:
-  すべてのジョブデータは `~/.codex-scheduler/jobs.json` に保存され、Desktop と CLI のどちらから登録・確認・キャンセルしても即座に相互反映されます。
-- **単一スケジューラ常設サービス（Single Persistent Scheduler Invariant）**:
-  OSネイティブの常設スケジューラ（macOS: LaunchAgent `dev.codexscheduler.scheduler` / Windows: Task Scheduler `CodexScheduler_Service`）はシステム全体で常に1つだけ存在します。重複起動や二重登録は発生しません。
-- **Desktop 優先ルール（Ownership Priority）**:
-  1. Desktop アプリがインストールされている環境では、常設スケジューラは Desktop アプリ本体が所有します。
-  2. CLI 単体で先に利用していた環境（CLI 所有）に Desktop アプリを後からインストールして起動した場合、Desktop アプリが安全に所有権を引き継ぎ（Takeover）、Desktop アプリ経由でのヘッドレス定期実行へ自動移行します。
-  3. Desktop 所有時に CLI から `uninstall-scheduler` を実行しても、Desktop アプリの定期実行が不意に停止しないよう安全に保護されます（アンインストールは拒否され、エラーコード `desktop_owner_protected` が返されます）。
-
-詳細な所有権遷移マトリクスや規範契約については、[`docs/specs/cli.md`](specs/cli.md)（`CLI-CMD-004`）および [`docs/specs/os-scheduler.md`](specs/os-scheduler.md)（`OS-SCHED-002`, `OS-SCHED-006`）を参照してください。
-
+  `Status: Ready` または `status --json` の各項目（`installed`, `ready`, `target_exists`, `owner_target_valid`）が `true` になっていれば正常に稼働しています。

@@ -31,3 +31,25 @@ jobs:
 
       - name: Run all mechanical checks
         run: cargo xtask check-all
+
+  windows-test:
+    name: Windows Verification & Task Scheduler Smoke
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+      - name: CLI Task Scheduler smoke test
+        shell: bash
+        run: |
+          cargo run -p codex-scheduler-cli -- status
+          cargo run -p codex-scheduler-cli -- install-scheduler
+          cargo run -p codex-scheduler-cli -- status --json
+          cargo run -p codex-scheduler-cli -- uninstall-scheduler
+          cargo run -p codex-scheduler-cli -- status --json

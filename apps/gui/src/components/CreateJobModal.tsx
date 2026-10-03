@@ -127,23 +127,13 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
       width={620}
       destroyOnClose
     >
-      {systemInfo?.os === "macos" ? (
-        <Alert
-          message="セッションの自動再開スケジュール"
-          description="Codexデスクトップアプリで停止したセッションのIDと作業ディレクトリを入力してください。指定時刻以降、次回の定期チェック時（通常1分以内）にOSバックグラウンドで自動的に 'continue' を送信し、同一セッションの続きから作業を再開できます。"
-          type="info"
-          showIcon
-          style={{ marginBottom: 20 }}
-        />
-      ) : (
-        <Alert
-          message="【Windows環境】常設スケジューラ未対応（手動実行・管理用）"
-          description="Windows環境では現行バージョンにおいてTask Scheduler常設連携は未対応です。登録したジョブは指定時刻になってもバックグラウンドで自動実行されません。手動実行（一覧の「今すぐ実行」）用として保存・管理されます。"
-          type="warning"
-          showIcon
-          style={{ marginBottom: 20 }}
-        />
-      )}
+      <Alert
+        message="セッションの自動再開スケジュール"
+        description="Codexデスクトップアプリで停止したセッションのIDと作業ディレクトリを入力してください。指定時刻以降、次回の定期チェック時（通常1分以内）にOSバックグラウンドで自動的に 'continue' を送信し、同一セッションの続きから作業を再開できます。"
+        type="info"
+        showIcon
+        style={{ marginBottom: 20 }}
+      />
 
       <Form form={form} layout="vertical" onFinish={handleFinish}>
         <Form.Item label="AI プロバイダ" name="provider" initialValue="codex">

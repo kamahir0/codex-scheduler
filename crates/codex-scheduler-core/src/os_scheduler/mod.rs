@@ -1,4 +1,5 @@
 pub mod macos;
+pub mod windows;
 
 use crate::models::Job;
 use std::path::Path;
@@ -38,7 +39,7 @@ pub enum SchedulerError {
     InvalidExecutable(String),
     #[error("Expected executable does not exist: {0}")]
     ExecutableNotFound(String),
-    #[error("On macOS, LaunchAgent is owned by Desktop application and cannot be uninstalled via CLI")]
+    #[error("Persistent scheduler is owned by Desktop application and cannot be uninstalled via CLI")]
     DesktopOwnerProtected,
     #[error("Malformed or unknown scheduler configuration: {0}")]
     MalformedConfiguration(String),
@@ -47,7 +48,12 @@ pub enum SchedulerError {
 }
 
 pub trait SchedulerBackend: Send + Sync {
-    /// 常設スケジューラサービス（LaunchAgent等）が登録され最新であることを保証する
+    /// プラットフォームが常設スケジューラ（LaunchAgent / Task Scheduler等）をサポートしているか判定する
+    fn supports_persistent_scheduler(&self) -> bool {
+        true
+    }
+
+    /// 常設スケジューラサービス（LaunchAgent / Task Scheduler等）が登録され最新であることを保証する
     fn ensure_scheduler_installed(&self, exe_path: &Path) -> Result<(), SchedulerError>;
 
     /// 常設スケジューラサービスが登録されているか確認する
@@ -91,7 +97,11 @@ pub trait SchedulerBackend: Send + Sync {
                     {
                         macos::MacOsLaunchdScheduler::is_desktop_executable(&path)
                     }
-                    #[cfg(not(target_os = "macos"))]
+                    #[cfg(target_os = "windows")]
+                    {
+                        windows::WindowsTaskScheduler::is_desktop_executable(&path)
+                    }
+                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
                     {
                         true
                     }
@@ -101,7 +111,11 @@ pub trait SchedulerBackend: Send + Sync {
                     {
                         macos::MacOsLaunchdScheduler::is_cli_executable(&path)
                     }
-                    #[cfg(not(target_os = "macos"))]
+                    #[cfg(target_os = "windows")]
+                    {
+                        windows::WindowsTaskScheduler::is_cli_executable(&path)
+                    }
+                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
                     {
                         true
                     }
@@ -134,24 +148,32 @@ pub fn get_platform_scheduler() -> Box<dyn SchedulerBackend> {
     {
         Box::new(macos::MacOsLaunchdScheduler::new())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(windows::WindowsTaskScheduler::new())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Box::new(FallbackScheduler)
     }
 }
 
-/// non-macOS環境向けのフォールバック実装。
-/// 現行バージョンでは常設OSスケジューラ（Windows Task Scheduler等）は未対応であり、
+/// macOSおよびWindows以外の環境向けのフォールバック実装。
+/// 未対応プラットフォームでは常設OSスケジューラは無効であり、
 /// 診断系（is_scheduler_installed, is_scheduler_ready, is_scheduler_path_matched）はfalseを返し、
 /// 所有者はSchedulerOwner::Noneを返す。
 ///
-/// WHY: Windowsなど未実装のプラットフォームで存在しないスケジューラをReadyと誤認させないため。
+/// WHY: 未実装のプラットフォームで存在しないスケジューラをReadyと誤認させないため。
 /// 一方で、ジョブ作成や手動実行などのJobStore操作自体を阻害しないよう、
 /// ensure_scheduler_installedやregister_jobはno-op Ok(())を返す。
 /// EVIDENCE: test_fallback_scheduler_diagnostics_unsupported
 pub struct FallbackScheduler;
 
 impl SchedulerBackend for FallbackScheduler {
+    fn supports_persistent_scheduler(&self) -> bool {
+        false
+    }
+
     fn ensure_scheduler_installed(&self, _exe_path: &Path) -> Result<(), SchedulerError> {
         Ok(())
     }

@@ -53,9 +53,7 @@
       "minimumSystemVersion": "11.0",
       "signingIdentity": "-"
     },
-    "resources": [
-      "resources/**/*"
-    ],
+    "resources": [],
     "shortDescription": "Automated session resume scheduler for OpenAI Codex",
     "targets": [
       "dmg",

@@ -80,7 +80,16 @@ impl SchedulerService {
     ) -> Self {
         let is_desktop = exe_path
             .as_deref()
-            .map(os_scheduler::macos::MacOsLaunchdScheduler::is_desktop_executable)
+            .map(|p| {
+                #[cfg(target_os = "windows")]
+                {
+                    os_scheduler::windows::WindowsTaskScheduler::is_desktop_executable(p)
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    os_scheduler::macos::MacOsLaunchdScheduler::is_desktop_executable(p)
+                }
+            })
             .unwrap_or(false);
         Self {
             store,
@@ -133,17 +142,12 @@ impl SchedulerService {
         if let Some(path) = &self.exe_path {
             self.scheduler.ensure_scheduler_installed(path)?;
             Ok(())
+        } else if self.scheduler.supports_persistent_scheduler() {
+            Err(CoreError::Scheduler(os_scheduler::SchedulerError::ExecutableNotFound(
+                "No executable path configured for scheduler installation".to_string(),
+            )))
         } else {
-            #[cfg(target_os = "macos")]
-            {
-                Err(CoreError::Scheduler(os_scheduler::SchedulerError::ExecutableNotFound(
-                    "No executable path configured for scheduler installation".to_string(),
-                )))
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                Ok(())
-            }
+            Ok(())
         }
     }
 
@@ -183,43 +187,39 @@ impl SchedulerService {
 
         // If invoked from Desktop GUI (is_desktop is true), ensure scheduler is registered with app path.
         // If invoked from CLI (is_desktop is false):
-        // - on macOS: if scheduler is ready (Desktop-owned or CLI-owned), keep existing LaunchAgent.
-        //   If NOT ready (None, Legacy, stale, or unloaded Desktop), safely ensure / repair using current CLI executable.
-        // - on non-macOS: proceed.
+        // - On platforms with persistent scheduler (macOS LaunchAgent, Windows Task Scheduler):
+        //   If scheduler is ready (Desktop-owned or CLI-owned), keep existing registered scheduler.
+        //   If NOT ready, safely ensure / repair using current CLI executable.
+        // - On unsupported platforms: proceed with JobStore insert.
         if self.is_desktop {
             if let Some(path) = &self.exe_path {
                 self.scheduler.ensure_scheduler_installed(path)?;
             }
-        } else {
-            #[cfg(target_os = "macos")]
-            {
-                if !self.is_scheduler_ready() {
-                    if let Some(cli_path) = &self.exe_path {
-                        self.scheduler.ensure_scheduler_installed(cli_path)?;
-                    } else {
-                        return Err(CoreError::Scheduler(os_scheduler::SchedulerError::ExecutableNotFound(
-                            "CLI executable path could not be resolved".to_string(),
-                        )));
-                    }
-                }
-
-                // WHY: Atomic scheduling invariant (OS-SCHED-006, CLI-CMD-004).
-                //      If the persistent OS scheduler cannot be verified as ready/loaded in macOS,
-                //      we must NOT save the new job to JobStore, preventing orphan jobs that would never trigger.
-                // WHAT BREAKS: Silent insertion when scheduler is unready causes users to believe a job is scheduled,
-                //              but background tick will never execute it.
-                // EVIDENCE: docs/spec-changes/0015-macos-scheduler-health-and-cli-status.md
-                if !self.is_scheduler_ready() {
-                    return Err(CoreError::Scheduler(os_scheduler::SchedulerError::CommandFailed(
-                        "OS scheduler LaunchAgent is not ready or loaded. Job scheduling aborted.".to_string(),
+        } else if self.scheduler.supports_persistent_scheduler() {
+            if !self.is_scheduler_ready() {
+                if let Some(cli_path) = &self.exe_path {
+                    self.scheduler.ensure_scheduler_installed(cli_path)?;
+                } else {
+                    return Err(CoreError::Scheduler(os_scheduler::SchedulerError::ExecutableNotFound(
+                        "CLI executable path could not be resolved".to_string(),
                     )));
                 }
             }
-            #[cfg(not(target_os = "macos"))]
-            {
-                if let Some(path) = &self.exe_path {
-                    let _ = self.scheduler.ensure_scheduler_installed(path);
-                }
+
+            // WHY: Atomic scheduling invariant (OS-SCHED-006, CLI-CMD-004, OS-SCHED-002).
+            //      If the persistent OS scheduler cannot be verified as ready/loaded in macOS or Windows,
+            //      we must NOT save the new job to JobStore, preventing orphan jobs that would never trigger.
+            // WHAT BREAKS: Silent insertion when scheduler is unready causes users to believe a job is scheduled,
+            //              but background tick will never execute it.
+            // EVIDENCE: docs/spec-changes/0015-macos-scheduler-health-and-cli-status.md
+            if !self.is_scheduler_ready() {
+                return Err(CoreError::Scheduler(os_scheduler::SchedulerError::CommandFailed(
+                    "Persistent OS scheduler service is not ready or active. Job scheduling aborted.".to_string(),
+                )));
+            }
+        } else {
+            if let Some(path) = &self.exe_path {
+                let _ = self.scheduler.ensure_scheduler_installed(path);
             }
         }
 

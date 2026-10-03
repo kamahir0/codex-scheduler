@@ -48,13 +48,6 @@ jobs:
       - name: Build standalone CLI binary
         run: cargo build --package codex-scheduler-cli --bin codex-scheduler --release --target ${{ matrix.target }}
 
-      - name: Stage worker CLI for bundle (Windows only)
-        if: matrix.platform == 'windows-x64'
-        shell: bash
-        run: |
-          mkdir -p apps/gui/src-tauri/resources
-          cp target/${{ matrix.target }}/release/codex-scheduler.exe apps/gui/src-tauri/resources/
-
       - name: Code sign CLI binary (macOS only)
         if: matrix.platform == 'macos-arm64'
         run: codesign -s - target/${{ matrix.target }}/release/codex-scheduler
@@ -105,6 +98,13 @@ jobs:
             fi
             echo "Found NSIS EXE: $SRC"
             cp "$SRC" "release-assets/Codex-Scheduler-${VER}-windows-x64.exe"
+
+            CLI_SRC="target/${{ matrix.target }}/release/codex-scheduler.exe"
+            if [ ! -f "$CLI_SRC" ]; then
+              echo "Error: Windows CLI binary not found at $CLI_SRC" >&2
+              exit 1
+            fi
+            cp "$CLI_SRC" "release-assets/Codex-Scheduler-CLI-${VER}-windows-x64.exe"
           fi
           echo "Staged release assets:"
           ls -la release-assets/
@@ -120,7 +120,7 @@ jobs:
           body: |
             ## Codex Scheduler ${{ github.ref_name }}
 
-            AIコーディングツール（Codex）利用枠リセット時 自動再開ツール（Desktop & macOS Standalone CLI）
+            AIコーディングツール（Codex）利用枠リセット時 自動再開ツール（macOS / Windows Desktop & Standalone CLI）
 
             ### Download
 
@@ -135,7 +135,8 @@ jobs:
             - macOS Apple Silicon (M1以降)
               `Codex-Scheduler-CLI-${{ steps.version.outputs.version }}-macos-arm64`
 
-            ※ Windows版では現行バージョンにおいてTask Schedulerによる常設自動実行は未対応です。Desktop GUIでジョブ管理・手動実行を利用できます（常設自動実行は今後のアップデートで対応予定です）。
+            - Windows 64-bit
+              `Codex-Scheduler-CLI-${{ steps.version.outputs.version }}-windows-x64.exe`
 
             インストール後の起動・権限設定・CLIの使い方は [セットアップガイド](https://github.com/${{ github.repository }}/blob/main/docs/setup-guide.md) をご覧ください。
           draft: false

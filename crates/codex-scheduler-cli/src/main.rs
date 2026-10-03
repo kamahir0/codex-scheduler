@@ -411,7 +411,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(()) => {
                             print_error_and_exit(
                                 "repair_scheduler_failed",
-                                "Desktop-owned scheduler was reloaded, but launchctl still reports not ready.",
+                                "Desktop-owned scheduler was repaired, but OS scheduler still reports not ready.",
                                 json,
                             );
                         }
@@ -453,7 +453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(codex_scheduler_core::os_scheduler::SchedulerError::DesktopOwnerProtected) => {
                     print_error_and_exit(
                         "desktop_owner_protected",
-                        "LaunchAgent is owned by Desktop application and cannot be uninstalled via CLI.",
+                        "Persistent scheduler service is owned by Desktop application and cannot be uninstalled via CLI.",
                         json,
                     );
                 }

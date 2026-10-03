@@ -8,15 +8,14 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
 
 [GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) の最新リリース（Latest Release）ページから、ご使用のOSに合ったインストーラをダウンロードします。
 
-### 配布パッケージ一覧（3種類）
+### 配布パッケージ一覧（4種類）
 
 | 種別 | OS / アーキテクチャ | ダウンロードファイル | 説明 |
 | :--- | :--- | :--- | :--- |
 | **Desktop GUI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-<version>-macos-arm64.dmg` | GUIデスクトップアプリ（単体で予約実行完結） |
-| **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ（アプリ起動中管理・手動実行対応） |
+| **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ（単体で予約実行完結） |
 | **Standalone CLI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLI実行ファイル（GUI不要、単体で予約実行完結） |
-
-※ Windows 環境では現行バージョンにおいて常設バックグラウンド実行（Task Scheduler連携）は未実装（次期アップデートで対応予定）であり、Desktop GUI アプリ起動中のジョブ管理・手動実行に対応しています。
+| **Standalone CLI** | Windows (64-bit) | `Codex-Scheduler-CLI-<version>-windows-x64.exe` | 単体CLI実行ファイル（GUI不要、単体で予約実行完結） |
 
 ---
 
@@ -67,7 +66,10 @@ Microsoft Defender SmartScreen が表示された場合：
 1. ダイアログ内の **「詳細情報」** をクリックします。
 2. 表示された **「実行」** ボタンをクリックします。
 
-※ 現行バージョン（v0.4.0）では、アプリ起動中にジョブ作成・一覧・手動実行・リトライ等の管理機能をご利用いただけます。OS ネイティブの Task Scheduler への常設自動登録（アプリ終了時の深夜自動起動）は次期アップデートでの対応を予定しています。
+#### Windows Task Scheduler 常設連携について
+- Windows Desktop アプリは、起動時または初回ジョブ登録時に、OS ネイティブの Task Scheduler へ単一の常設サービス（`CodexScheduler_Service`）を自動登録します。
+- アプリを終了しても、指定時刻以降にバックグラウンドで自動的に `codex-scheduler-gui.exe --scheduler-tick` が実行され、予約ジョブが処理されます。
+- 現在のユーザー権限（LeastPrivilege, InteractiveToken）で登録されるため、UAC 管理者権限の昇格確認は不要です。
 
 ---
 
@@ -90,7 +92,9 @@ codex --version
 
 GUI不要の環境やCI/CD、スクリプト自動化向けに、単一バイナリの CLI ディストリビューションを提供しています。
 
-### インストール手順 (macOS)
+### インストール手順
+
+#### macOS の場合
 1. Releases から `Codex-Scheduler-CLI-<version>-macos-arm64` をダウンロードします。
 2. 実行権限を付与し、PATHの通った場所（例: `/usr/local/bin` や `~/.local/bin`）へ配置します：
    ```bash
@@ -99,6 +103,19 @@ GUI不要の環境やCI/CD、スクリプト自動化向けに、単一バイナ
    ```
 3. バージョンを確認します：
    ```bash
+   codex-scheduler --version
+   ```
+
+#### Windows の場合
+1. Releases から `Codex-Scheduler-CLI-<version>-windows-x64.exe` をダウンロードします。
+2. 任意のフォルダ（推奨: `%USERPROFILE%\.local\bin`）へ配置し、`codex-scheduler.exe` にリネームします：
+   ```powershell
+   New-Item -ItemType Directory -Force -Path "$HOME\.local\bin"
+   Move-Item Codex-Scheduler-CLI-*-windows-x64.exe "$HOME\.local\bin\codex-scheduler.exe"
+   ```
+3. `$HOME\.local\bin` がシステムの環境変数 PATH に含まれていることを確認します。
+4. バージョンを確認します：
+   ```powershell
    codex-scheduler --version
    ```
 
@@ -154,9 +171,9 @@ Desktop アプリと standalone CLI は、両方インストールされてい�
 - **共有ジョブストア**:
   すべてのジョブデータは `~/.codex-scheduler/jobs.json` に保存され、Desktop と CLI のどちらから登録・確認・キャンセルしても即座に相互反映されます。
 - **単一スケジューラ常設サービス（Single Persistent Scheduler Invariant）**:
-  macOS の常設スケジューラ（LaunchAgent: `dev.codexscheduler.scheduler`）はシステム全体で常に1つだけ存在します。重複起動や二重登録は発生しません。
+  OSネイティブの常設スケジューラ（macOS: LaunchAgent `dev.codexscheduler.scheduler` / Windows: Task Scheduler `CodexScheduler_Service`）はシステム全体で常に1つだけ存在します。重複起動や二重登録は発生しません。
 - **Desktop 優先ルール（Ownership Priority）**:
-  1. Desktop アプリがインストールされている環境では、LaunchAgent は Desktop アプリ本体（Gatekeeper 承認済みのシングル実行ファイル）が所有します。
+  1. Desktop アプリがインストールされている環境では、常設スケジューラは Desktop アプリ本体が所有します。
   2. CLI 単体で先に利用していた環境（CLI 所有）に Desktop アプリを後からインストールして起動した場合、Desktop アプリが安全に所有権を引き継ぎ（Takeover）、Desktop アプリ経由でのヘッドレス定期実行へ自動移行します。
   3. Desktop 所有時に CLI から `uninstall-scheduler` を実行しても、Desktop アプリの定期実行が不意に停止しないよう安全に保護されます（アンインストールは拒否され、エラーコード `desktop_owner_protected` が返されます）。
 

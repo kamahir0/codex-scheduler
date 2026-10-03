@@ -73,28 +73,29 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
    - 自動化スクリプトまたは外部エージェントは、`installed == true && ready == true && target_exists == true && owner_target_valid == true` をもってスケジューラが正常稼働可能であると判定しなければならない（MUST）。
    - `owner == "desktop"` の場合、CLI からの呼出において `path_matched == false` となることは正常かつ期待される動作であり、これを異常（failure）と判定してはならない（MUST NOT）。
 
-### CLI-CMD-004: スケジューラ所有権認識・健全性検証と自己プロビジョニング（macOS）
+### CLI-CMD-004: スケジューラ所有権認識・健全性検証と自己プロビジョニング（macOS / Windows）
 
-1. **macOS CLI-only 環境での自己プロビジョニング**:
-   - macOS 環境において Desktop が未インストールまたはスケジューラ未登録の場合、`schedule` または `install-scheduler` 実行時に、CLI 自身を実行主体（`codex-scheduler --scheduler-tick`）とする常設スケジューラ（LaunchAgent）を安全に登録（ensure）できなければならない（MUST）。
-   - ※ Windows 環境における常設 Task Scheduler 連携は現バージョンでは未実装（次期 Objective 候補）であり、`schedule` は共有 JobStore へのジョブ追加を正常に行うが、OS スケジューラの自動登録やアプリ終了後の自動起動は行われない。
+1. **CLI-only 環境での自己プロビジョニング**:
+   - macOS および Windows 環境において Desktop が未インストールまたはスケジューラ未登録の場合、`schedule` または `install-scheduler` 実行時に、CLI 自身を実行主体（macOS: `codex-scheduler --scheduler-tick`、Windows: `codex-scheduler.exe --scheduler-tick`）とする常設スケジューラ（macOS: LaunchAgent、Windows: Task Scheduler）を安全に登録（ensure）できなければならない（MUST）。
 2. **Desktop 所有スケジューラの健全性検証と安全修復（Safe Repair）**:
-   - macOS 環境において Desktop 所有のスケジューラが登録されている場合、CLI はその稼働状態（ready）を検査しなければならない（MUST）。
-   - **正常稼働時（ready == true）**: CLI は LaunchAgent 設定を変更してはならない（MUST NOT overwrite）。ジョブは共有 `jobs.json` に追加され、Desktop スケジューラによって実行される。
-   - **未ロード時（ready == false）**: CLI は Desktop 所有 LaunchAgent plist の内容（実行ファイルパスや引数）を変更することなく、`launchctl load -w` による安全な再ロード（safe repair）を試行しなければならない（MUST）。修復成功時は所有権 `Desktop` を維持したまま `ready == true` となり、スケジュールを続行する。
-   - **修復失敗または設定破損時**: 修復に失敗した場合、または設定が破損（invalid/malformed）している場合、CLI はエラーを出力しなければならず、Desktop plist を自身の CLI バイナリで勝手に上書きしてはならない（MUST NOT overwrite with CLI binary）。
+   - Desktop 所有のスケジューラが登録されている場合、CLI はその稼働状態（ready）を検査しなければならない（MUST）。
+   - **正常稼働時（ready == true）**: CLI は既存のスケジューラ設定を変更してはならない（MUST NOT overwrite）。ジョブは共有 `jobs.json` に追加され、Desktop スケジューラによって実行される。
+   - **未ロード・無効時（ready == false）**: CLI は Desktop 所有スケジューラ設定（実行ファイルパスや引数）を変更することなく、安全な再ロード・修復（safe repair）を試行しなければならない（MUST）。修復成功時は所有権 `Desktop` を維持したまま `ready == true` となり、スケジュールを続行する。
+   - **修復失敗または設定破損時**: 修復に失敗した場合、または設定が破損（invalid/malformed）している場合、CLI はエラーを出力しなければならず、既存の Desktop 設定を自身の CLI バイナリで勝手に上書きしてはならない（MUST NOT overwrite with CLI binary）。
 3. **新規スケジュールの保存アトミック性**:
-   - macOS 環境において、常設スケジューラが最終的に ready 状態とならなかった場合、`schedule` コマンドはジョブを JobStore に保存してはならず（MUST NOT）、構造化エラー（`schedule_failed`）を出力して非ゼロ終了しなければならない（MUST）。既存ジョブは削除・変更しない。
+   - 常設スケジューラがサポートされている OS において、スケジューラが最終的に ready 状態とならなかった場合、`schedule` コマンドはジョブを JobStore に保存してはならず（MUST NOT）、構造化エラー（`schedule_failed`）を出力して非ゼロ終了しなければならない（MUST）。既存ジョブは削除・変更しない。
 4. **`install-scheduler` の修復対応**:
    - Desktop 所有かつ `ready == true` の場合: `status: "retained"`, 所有権を維持。
    - Desktop 所有かつ `ready == false` の場合: safe repair を試行し、成功時は `status: "repaired"`、失敗時は非ゼロ終了および構造化エラーを出力（MUST）。
 5. **安全なアンインストール保護**:
-   - macOS 環境において `uninstall-scheduler` は現在の所有者を確認し、Desktop 所有である場合はエラー（`desktop_owner_protected`）を返してアンインストールを拒絶しなければならない（MUST NOT uninstall Desktop-owned scheduler）。CLI 所有である場合のみアンロードおよび plist 削除を行う。
+   - `uninstall-scheduler` は現在の所有者を確認し、Desktop 所有である場合はエラー（`desktop_owner_protected`）を返してアンインストールを拒絶しなければならない（MUST NOT uninstall Desktop-owned scheduler）。CLI 所有である場合のみアンロード/タスク削除を行う。
+6. **Windows CLI 推奨配置場所**:
+   - Windows standalone CLI の推奨インストールパスは `%USERPROFILE%\.local\bin\codex-scheduler.exe` とする。
 
 ### CLI-CMD-005: 共有 JobStore と並行性制御
 
 1. **同一データストアの共有**:
-   - CLI は常に Desktop GUI と同一の `~/.codex-scheduler/jobs.json` を読み書きしなければならない（MUST）。
+   - CLI は常に Desktop GUI と同一の `jobs.json`（macOS: `~/.codex-scheduler/jobs.json`、Windows: `%USERPROFILE%\.codex-scheduler\jobs.json`）を読み書きしなければならない（MUST）。
 2. **相互可視性（Mutual Observability）**:
    - CLI で `schedule` したジョブは直ちに Desktop GUI の一覧およびメトリクスに反映されなければならない（MUST）。
    - Desktop GUI で作成されたジョブは CLI の `list` / `show` で閲覧・キャンセル可能でなければならない（MUST）。
@@ -105,9 +106,9 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
 
 - `codex-scheduler --help` および `codex-scheduler --version` が正しく表示されること。
 - `schedule --json`, `list --json`, `show --json`, `cancel --json`, `delete --json`, `status --json` の標準出力が JSON パース可能であること。
-- macOS CLI-only 環境で `schedule` 実行時に LaunchAgent が登録され、`owner` が `cli` となること。
-- macOS において Desktop 所有の LaunchAgent が存在する場合、CLI の `schedule` が Desktop 登録を上書きせず維持すること。
-- macOS において Desktop 所有時に `uninstall-scheduler` がエラーで終了し、LaunchAgent が保護されること。
+- macOS および Windows の CLI-only 環境で `schedule` 実行時にスケジューラが登録され、`owner` が `cli` となること。
+- Desktop 所有のスケジューラが存在する場合、CLI の `schedule` が Desktop 登録を上書きせず維持すること。
+- Desktop 所有時に `uninstall-scheduler` がエラーで終了し、スケジューラが保護されること。
 
 ## 互換性
 
@@ -118,4 +119,4 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
 
 - CLI 自身による常駐 HTTP / Webhook サーバーの起動。
 - 対話型 TUI（Terminal UI）ダッシュボードの実装。
-- Windows Task Scheduler との CLI 単体常設スケジューラ統合（現 Objective では非スコープ、次期 Objective 候補）。
+- CLI 自身の自動アップデート機能。

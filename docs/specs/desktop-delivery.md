@@ -16,33 +16,33 @@ GitHub Releasesを通じて、macOS（DMG）およびWindows（インストー�
 
 ### DELIVERY-BUNDLE-001: 配布パッケージ形式
 
-ユーザー向け配布パッケージ形式は、一般ユーザーおよび自動化・CLIユーザーが迷わず選択できるよう、以下の3種類（Desktop 2種 + CLI 1種）に厳格に限定しなければならない（MUST）。
+ユーザー向け配布パッケージ形式は、一般ユーザーおよび自動化・CLIユーザーが迷わず選択できるよう、以下の4種類（Desktop 2種 + CLI 2種）に厳格に限定しなければならない（MUST）。
 
 1. **Desktop Distribution**:
    - **macOS**: `.dmg`（ドラッグ＆ドロップインストール可能なディスクイメージ）。Apple Silicon（M1〜M4）対応。
    - **Windows**: `.exe`（NSIS インストーラ、64-bit対応）。
 2. **CLI Distribution**:
    - **macOS**: standalone executable（`codex-scheduler`、Apple Silicon arm64、ad-hocコード署名済）。
+   - **Windows**: standalone executable（`codex-scheduler.exe`、64-bit x64）。
 
 #### 非公開・除外対象（Prohibited Assets）
 以下の形式は、ユーザー向けRelease assetとして公開してはならない（MUST NOT）。
 - `*.app.tar.gz`: 現状自動Updater機能を使用しておらず、ユーザーを混乱させるため公開禁止とする。
 - `*.msi`: WiXインストーラは保守コストおよび形式重複による選択迷いを防ぐため、NSIS `.exe` に一本化し、生成・公開対象から除外する。
-- Windows standalone CLI: Windows環境ではTask Scheduler常設バックエンドが未統合（FallbackScheduler）であるため、CLI単体での常設予約実行が未達である。したがってv0.4.0では正式配布物から除外する（Windows環境における常設Task Scheduler統合はDesktop/CLIともに次期Objective候補とする）。
 - Linux配布物: 現状サポート対象外。
 
-### DELIVERY-BUNDLE-002: macOS シングル実行ファイル構成とプラットフォーム別スケジューラ実行主体
+### DELIVERY-BUNDLE-002: プラットフォーム別シングル実行ファイル構成とスケジューラ実行主体
 
-macOSデスクトップ版において、外部の別バイナリ（`codex-scheduler-cli`）に起因するGatekeeper拒否を根本防止するため、メインアプリ実行ファイル（`Codex Scheduler.app/Contents/MacOS/...`）自身をOSスケジューラの実行主体としなければならない（MUST）。
+各OSデスクトップ版において、外部の別バイナリに起因する権限・セキュリティ拒否やランタイム依存を根本防止するため、メインアプリ実行ファイル自身をOSスケジューラの実行主体としなければならない（MUST）。
 
 1. **macOS 実行主体（1 App / 1 Executable / 2 Modes）**:
    - LaunchAgent（`dev.codexscheduler.scheduler.plist`）の `ProgramArguments` には、現在実行中のアプリ本体の絶対パス（`std::env::current_exe()`）および `--scheduler-tick` を登録しなければならない（MUST）。
-   - 外部固定パス（`~/.local/share/codex-scheduler/bin/codex-scheduler-cli`）やアプリ内別バイナリへの依存を排除する（MUST NOT）。
    - アプリ本体が移動・更新された場合は、次回起動時またはジョブ登録時にLaunchAgent内のパス差分を検知して安全に更新しなければならない（MUST）。同一パスかつ登録済みであれば再登録を行ってはならない（MUST NOT）。
-2. **Windows 実行主体**:
-   - Windows環境においては、現行バージョンでは常設Task Schedulerバックエンドは未統合（FallbackScheduler）であり、アプリ起動中の管理・手動実行のみサポートする。Task Scheduler連携による常設バックグラウンド実行は次期Objective候補とする。
-3. **外部 Worker CLI（`codex-scheduler-cli`）の扱い**:
-   - CLI ツールは開発者向け・手動操作用としてリポジトリ内で維持してよいが、macOS デスクトップ版の正常な予約実行において CLI の存在やGatekeeper通過を必須条件にしてはならない（MUST NOT）。
+2. **Windows 実行主体（1 App / 1 Executable / 2 Modes）**:
+   - Task Scheduler（`CodexScheduler_Service`）の Action には、現在実行中のアプリ本体の絶対パス（`std::env::current_exe()`）および `--scheduler-tick` を登録しなければならない（MUST）。
+   - Windows Desktop は standalone CLI バイナリをランタイム依存として同梱・実行してはならない（MUST NOT depend on separate CLI binary at runtime）。
+3. **Standalone CLI の独立性**:
+   - CLI ツールは Desktop GUI がインストールされていない環境でも単体で自己プロビジョニング（`install-scheduler`）およびバックグラウンド予約実行を完結できなければならない（MUST）。
 
 ### DELIVERY-BUNDLE-003: バンドルメタデータ
 
@@ -76,10 +76,10 @@ Apple Developer Programの有償アカウントを使用しない完全無料オ
    - Node.js 環境セットアップと依存関係キャッシュ。
    - Rust ツールチェーンのセットアップ。
    - フロントエンドのビルド（`npm run frontend:build`）。
-   - Worker CLI バイナリのビルドとリソースディレクトリへのステージング。
+   - Standalone CLI バイナリのビルド。
    - Tauri アプリおよびインストーラのビルド。
 4. **リリース公開と成果物選別**:
-   - ビルド成果物から `DELIVERY-CI-002` で規定された命名規則に従ってリネームした Desktop 2種（`.dmg`, `.exe`）および CLI 1種（standalone binary）の計3ファイルのみを明示的に選別・アップロードしなければならない（MUST）。
+   - ビルド成果物から `DELIVERY-CI-002` で規定された命名規則に従ってリネームした Desktop 2種（`.dmg`, `.exe`）および CLI 2種（macOS standalone, Windows standalone `.exe`）の計4ファイルのみを明示的に選別・アップロードしなければならない（MUST）。
    - `*.app.tar.gz` や `*.msi` 等の不要な中間成果物が GitHub Releases に添付されてはならない（MUST NOT）。
 
 ### DELIVERY-CI-002: 成果物の命名規則
@@ -93,14 +93,16 @@ Codex-Scheduler-<version>-windows-x64.exe
 
 CLI:
 Codex-Scheduler-CLI-<version>-macos-arm64
+Codex-Scheduler-CLI-<version>-windows-x64.exe
 ```
 
-具体的には以下の3形式のみとする：
+具体的には以下の4形式のみとする：
 - macOS Desktop: `Codex-Scheduler-<version>-macos-arm64.dmg`
 - Windows Desktop: `Codex-Scheduler-<version>-windows-x64.exe`
 - macOS CLI: `Codex-Scheduler-CLI-<version>-macos-arm64`
+- Windows CLI: `Codex-Scheduler-CLI-<version>-windows-x64.exe`
 
-（例: `Codex-Scheduler-0.4.0-macos-arm64.dmg`, `Codex-Scheduler-CLI-0.4.0-macos-arm64`）
+（例: `Codex-Scheduler-0.5.0-macos-arm64.dmg`, `Codex-Scheduler-CLI-0.5.0-windows-x64.exe`）
 
 #### 命名トークン規則
 - OS識別子: macOSは `macos`、Windowsは `windows-x64` を使用する（MUST）。

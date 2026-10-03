@@ -6,11 +6,10 @@ Domain: OSSCHED
 
 ## 概要
 
-GUIデスクトップアプリが終了・就寝中であっても、指定時刻以降にOSネイティブのタイマー機能（定期ポーリング）によってバックグラウンドで待機中ジョブを実行するための仕様を定める。
-現行バージョン（v0.4.0）における常設OSスケジューラ（バックグラウンド自動定期実行）の production backend は **macOS (LaunchAgent)** のみである。
-Windows 環境においては、常設 Task Scheduler 連携は計画仕様（次期 Objective 候補）として位置付けられ、現行コア実装は `FallbackScheduler`（内部 no-op、スケジューラ未登録・未準備状態）として動作する。Windows ではアプリ起動中の管理・手動実行のみがサポートされ、アプリ終了後の自動起動はサポートされない。
-macOS においてはジョブごとに新しいバックグラウンド項目通知が出るのを防止するため、アプリ全体で1つの固定LaunchAgentを常設し、アプリ内部で複数ジョブを管理するアーキテクチャを採用する（1 Application = 1 LaunchAgent, N Jobs = jobs store内部管理）。
-また、Gatekeeperによる別バイナリ拒否を根本排除するため、macOSデスクトップ環境ではメインアプリ実行ファイル（`Codex Scheduler.app/Contents/MacOS/...`）自身をヘッドレスモード（`--scheduler-tick`）で起動する「1 app / 1 executable / 2 execution modes」構成とする。
+GUIデスクトップアプリやCLIターミナルが終了・就寝中であっても、指定時刻以降にOSネイティブのタイマー機能（定期ポーリング）によってバックグラウンドで待機中ジョブを実行するための仕様を定める。
+OSスケジューラ連携の production backend として、**macOS (LaunchAgent)** および **Windows (Task Scheduler)** をサポートする。
+いずれのOSにおいても、ジョブごとにOSスケジューラ登録を乱立させるのを防ぎ、単一の常設スケジューラが共有ジョブストア（`jobs.json`）を定期ポーリング（60秒間隔）して期限到来ジョブを自動実行するアーキテクチャを採用する（1 Application = 1 persistent scheduler per OS/user, N Jobs = jobs.json内部管理）。
+また、別バイナリ起動による権限・セキュリティ問題を排除するため、Desktop環境ではメインアプリ実行ファイル（macOS: `Codex Scheduler.app/.../codex-scheduler-gui`、Windows: `codex-scheduler-gui.exe`）自身をヘッドレスモード（`--scheduler-tick`）で起動する「1 app / 1 executable / 2 execution modes」構成とする。standalone CLI環境ではCLI実行ファイル（`codex-scheduler` / `codex-scheduler.exe`）自身が同様に `--scheduler-tick` を実行する。
 
 ## 用語
 
@@ -44,19 +43,39 @@ macOS環境において、バックグラウンド実行を担保するために
 5. **ジョブの登録・編集・削除**:
    - ジョブの追加、編集、削除、リトライ時刻更新はすべて `jobs.json` の更新のみで完結し、LaunchAgentの追加・更新・削除は行わない（MUST NOT）。
 
-### OS-SCHED-002: Windows Task Scheduler 連携（計画仕様 / 次期Objective候補）
+### OS-SCHED-002: Windows Task Scheduler 単一常設連携（Production Backend）
 
-※ 現行バージョン（v0.4.0）のコア実装において、non-macOS プラットフォームは `FallbackScheduler`（内部no-op）として動作し、Windows Task Scheduler への常設タスク自動登録は未実装である。
-コア API は `is_scheduler_installed() == false`, `is_scheduler_ready() == false`, `is_scheduler_path_matched() == false`, `get_scheduler_owner() == SchedulerOwner::None` を返し、存在しない常設スケジューラを Ready と誤認させない。
-Windows Task Scheduler backend の本格統合は次期 Objective 候補とし、本仕様は将来の実装要件として定義する。
+Windows環境において、バックグラウンド定期実行を担保するために以下の仕様に従って単一の常設タスク（`CodexScheduler_Service`）を登録・管理しなければならない（MUST）。
 
-Windows環境において、タスクスケジューラ連携実装時は以下の仕様に従ってタスクを登録・管理しなければならない（MUST）。
-
-1. **タスク名**: `CodexScheduler_Service`（または `CodexScheduler_<job_id>`）
-2. **登録・実行**:
-   - 定期タスク（1分間隔）として `codex-scheduler tick` を登録するか、または個別タスクとして起動。
-3. **クリーンアップ**:
-   - ジョブ完了時またはアンインストール時に適切にタスクを整理する。
+1. **単一タスク識別と不変条件**:
+   - タスク名: `CodexScheduler_Service`
+   - システム内に登録されるタスクは常に `CodexScheduler_Service` の1つのみであり、ジョブごとの個別タスクを作成してはならない（MUST NOT）。
+2. **正規タスク構成（Canonical Task Definition）**:
+   - **Trigger**: 1分間隔の反復実行（`Repetition.Interval: PT1M`）、常設リピート、`Enabled: true`。
+   - **Action**: 実行ファイル絶対パスおよび引数 `--scheduler-tick`。
+   - **Security**: Current User context（管理者特権・SYSTEM実行・パスワード保存を要求せず、UAC昇格を求めない `InteractiveToken`）。
+   - **Settings**:
+     - `MultipleInstancesPolicy: IgnoreNew`（重複実行防止）
+     - `DisallowStartIfOnBatteries: false`（バッテリー駆動時も実行）
+     - `StopIfGoingOnBatteries: false`
+     - `RunOnlyIfIdle: false`
+     - `RunOnlyIfNetworkAvailable: false`
+     - `StartWhenAvailable: true`（予定時刻経過後の再開時即時実行）
+     - `WakeToRun: false`（スリープ解除は強制せず、復帰後次tickで処理）
+3. **OS境界と schtasks.exe コマンド実行契約**:
+   - Windows標準の `schtasks.exe` を使用し、`std::process::Command` の引数ベクタ形式で安全に呼び出す（シェル文字列連結によるコマンドインジェクションを禁止）。
+   - タスクの存在確認および構成照会は `schtasks /Query /TN CodexScheduler_Service /XML` を用いてXMLを構造的に解析する。
+   - テスト容易性のための抽象化境界（`TaskSchedulerRunner` トレイト）を介して実行し、ユニットテストで実機のScheduled Taskを汚染・破壊しない。
+4. **所有権モデルと優先度ルール**:
+   - `Desktop`: アクション実行ファイル名が `codex-scheduler-gui.exe` であり実在する。
+   - `Cli`: アクション実行ファイル名が `codex-scheduler.exe`（またはlegacy互換名 `codex-scheduler-cli.exe`）であり実在する。
+   - `None`: `CodexScheduler_Service` が存在しない。
+   - `Invalid`: アクション不存在、引数不正、実行ファイル消失（stale）、または構文破損。
+   - **Desktop 優先（Desktop Precedence）**: 有効な Desktop 所有タスクが存在する場合、CLI はタスクを変更せず維持する（MUST NOT overwrite）。未ロード・無効化状態（ready == false）の場合は同一 Desktop ターゲットを維持して修復（safe repair）する。
+   - **CLI から Desktop への安全な移行（Safe Takeover）**: CLI 所有タスクが存在する状態で Desktop GUI が起動された場合、Desktop はタスクの実行主体を `codex-scheduler-gui.exe` へ安全に移行する（MAY）。
+   - **Invalid / Stale 登録の非破壊保護**: ターゲット実行ファイルが消失した stale 登録に対し、CLI は自身のバイナリで上書きしてはならず（MUST NOT）、構造化エラー（`ExecutableNotFound`）を返す。未知の構文破損タスクは上書きせず `MalformedConfiguration` を返す。
+5. **スケジュールアトミック性（Schedule Atomicity Invariant）**:
+   - スケジューラが ready であることを確認した後にのみ新規ジョブを JobStore（`jobs.json`）へ保存する。修復失敗や破損時は保存を遮断しエラーを返す。
 
 ### OS-SCHED-003: ヘッドレスモード要件と共有コアセマンティクス
 

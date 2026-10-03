@@ -15,9 +15,9 @@ Status: Approved
 ## 根拠と分類（Source Evidence and Classification）
 
 - **Human Decision / Direct Request**:
-  - Codex Scheduler を2つの独立した正式ディストリビューションとして提供する：
-    - **Desktop distribution**: GUIを提供、Desktop単体で完全に予約実行可能、standalone CLIのインストールに依存しない。
-    - **CLI distribution**: GUI不要、CLI単体で完全に予約実行可能、Desktopのインストールに依存しない。
+  - Codex Scheduler を独立した正式ディストリビューションとして提供する：
+    - **Desktop distribution**: GUIを提供、Desktop単体で完全に予約実行可能、standalone CLIのインストールに依存しない（macOS DMG, Windows EXE）。
+    - **CLI distribution**: GUI不要、macOSにおいてCLI単体で完全に予約実行可能、Desktopのインストールに依存しない（macOS Apple Silicon standalone binary。Windows CLI Task Scheduler統合は次期候補）。
   - 両方がインストールされている場合：
     - `JobStore` / コアセマンティクスは共有（`~/.codex-scheduler/jobs.json`）。
     - persistent scheduler は1つだけ（macOS `dev.codexscheduler.scheduler`）。
@@ -72,10 +72,10 @@ Status: Approved
 ## 提案する差分（Proposed Delta）
 
 - **新規仕様 `docs/specs/cli.md`**:
-  - `CLI-CMD-001: 正式コマンド名および配布形態`: コマンド名 `codex-scheduler`、単体で予約実行完結、Desktop 非依存。
+  - `CLI-CMD-001: 正式コマンド名および配布形態`: コマンド名 `codex-scheduler`、macOS において単体で予約実行完結、Desktop 非依存。CLI コントラクト自体は cross-platform に提供。
   - `CLI-CMD-002: 正式コマンドサーフェス`: `schedule`, `list`, `show`, `cancel`, `delete`, `status`, `tick`, `install-scheduler`, `uninstall-scheduler` のパラメータと挙動。
   - `CLI-CMD-003: 機械可読 JSON モード`: `--json` オプション時の純粋 JSON 出力・非ゼロ終了コード・エラー出力規約。
-  - `CLI-CMD-004: スケジューラ所有権認識と自己プロビジョニング`: CLI-only での自動登録、Desktop 所有スケジューラの尊重、無断削除防止。
+  - `CLI-CMD-004: スケジューラ所有権認識と自己プロビジョニング`: macOS CLI-only での LaunchAgent 自動登録、Desktop 所有スケジューラの尊重、無断削除防止。Windows Task Scheduler 統合は次期 Objective 候補（Non-goal）。
   - `CLI-CMD-005: 共有 JobStore と並行性制御`: `~/.codex-scheduler/jobs.json` の共有、ファイルロックとアトミッククレームによる GUI/CLI 並行安全性の保証。
 - **仕様改定 `docs/specs/os-scheduler.md`**:
   - `OS-SCHED-006: macOS スケジューラ所有権モデルと優先度（Single Scheduler Ownership & Precedence）`:
@@ -83,8 +83,8 @@ Status: Approved
     - 所有権優先度ルール（Desktop 優先、CLI は奪わない、Desktop 起動時の安全な引継ぎ、stale 時の修復、未知設定の非破壊エラー）。
     - 実行主体引数: Desktop は `[<app_executable>, "--scheduler-tick"]`、CLI は `[<cli_executable>, "--scheduler-tick"]`。
 - **仕様改定 `docs/specs/desktop-delivery.md`**:
-  - `DELIVERY-BUNDLE-001`: 配布パッケージ形式に standalone CLI（macOS arm64 standalone binary, Windows x64 NSIS/EXE）を正式追加。
-  - `DELIVERY-BUNDLE-005`: アセット命名規則に `Codex-Scheduler-CLI-<version>-macos-arm64` および `Codex-Scheduler-CLI-<version>-windows-x64.exe` を追加。
+  - `DELIVERY-BUNDLE-001`: 配布パッケージ形式を 3 種類（Desktop 2種: macOS DMG, Windows EXE + standalone CLI 1種: macOS arm64 standalone binary）に厳格化。Windows standalone CLI は Task Scheduler 常設バックエンド未統合のため正式配布対象外とし、Windows 環境での予約実行は Desktop distribution を正式サポートとする。
+  - `DELIVERY-CI-002`: アセット命名規則に `Codex-Scheduler-CLI-<version>-macos-arm64` を追加（計 3 アセット）。
 - **仕様改定 `docs/gui/setup-and-diagnostics.md`**:
   - `DIAG-UI-003`: 診断モーダル項目に「スケジューラ所有者（Desktop / CLI）」および所有権状態を追加。
 

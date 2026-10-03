@@ -26,7 +26,7 @@
 - 🔄 **Desktop-first 運用に完全準拠**  
   Codexデスクトップアプリ、CLI、IDEで同一のローカルセッションDBが共有される仕組みを活用し、深夜に外部から非対話で安全に再開（`codex exec resume <session_id> "continue"`）を実行します。
 - ⏰ **OSネイティブスケジューラ連携（省電力 & 高信頼性）**  
-  アプリ自身が深夜まで常駐し続ける必要はありません。OS標準のスケジューラ（macOS: `launchd`, Windows: `Task Scheduler`）に委譲するため、アプリを終了していても指定時刻以降にバックグラウンド起動して確実に実行します（定期確認により通常1分以内に開始）。
+  アプリ自身が深夜まで常駐し続ける必要はありません。macOS では OS 標準のスケジューラ（`launchd` LaunchAgent）に委譲するため、アプリを終了していても指定時刻以降にバックグラウンド起動して確実に実行します（定期確認により通常1分以内に開始）。※ Windows 環境での常設 Task Scheduler 連携は次期アップデートで対応予定です。
 - 🛡️ **インテリジェント・リトライポリシー**  
   リセット予定時刻の微小なズレ（数分の遅延）や一時的な利用制限超過（HTTP 429等）を自動判定。設定間隔（例: 5分おき）で成功するまで自動再試行します。
 - 🎨 **Ant Design による洗練されたモダンUI**  
@@ -41,7 +41,7 @@
 | **バックエンド / コア** | [Rust](https://www.rust-lang.org/) / [Tauri v2](https://tauri.app/) |
 | **フロントエンド** | [React 19](https://react.dev/) / [TypeScript](https://www.typescriptlang.org/) / [Vite](https://vitejs.dev/) |
 | **UIコンポーネント** | [Ant Design 5](https://ant.design/) / [Lucide Icons](https://lucide.dev/) |
-| **OSスケジューラ** | macOS `launchd` (LaunchAgent) / Windows Task Scheduler |
+| **OSスケジューラ** | macOS `launchd` (LaunchAgent) / Windows Task Scheduler (対応予定) |
 
 ---
 

@@ -68,14 +68,15 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
        - `path_matched`: bool
      - `platform`: OS名文字列
 
-### CLI-CMD-004: スケジューラ所有権認識と自己プロビジョニング
+### CLI-CMD-004: スケジューラ所有権認識と自己プロビジョニング（macOS）
 
-1. **CLI-only 環境での自己プロビジョニング**:
-   - Desktop が未インストールまたはスケジューラ未登録の環境において、`schedule` または `install-scheduler` 実行時に、CLI 自身を実行主体（`codex-scheduler --scheduler-tick`）とする常設スケジューラを安全に登録（ensure）できなければならない（MUST）。
+1. **macOS CLI-only 環境での自己プロビジョニング**:
+   - macOS 環境において Desktop が未インストールまたはスケジューラ未登録の場合、`schedule` または `install-scheduler` 実行時に、CLI 自身を実行主体（`codex-scheduler --scheduler-tick`）とする常設スケジューラ（LaunchAgent）を安全に登録（ensure）できなければならない（MUST）。
+   - ※ Windows 環境における CLI 単体での Task Scheduler 常設登録は本バージョンの要件とせず（次期 Objective 候補）、`schedule` は共有 JobStore へのジョブ追加を正常に行う。
 2. **Desktop 所有スケジューラの尊重**:
-   - 既に有効な Desktop 所有のスケジューラが登録されている場合、CLI は LaunchAgent 設定を変更してはならない（MUST NOT overwrite）。ジョブは共有 `jobs.json` に追加され、Desktop スケジューラによって実行される。
+   - macOS 環境において既に有効な Desktop 所有のスケジューラが登録されている場合、CLI は LaunchAgent 設定を変更してはならない（MUST NOT overwrite）。ジョブは共有 `jobs.json` に追加され、Desktop スケジューラによって実行される。
 3. **安全なアンインストール保護**:
-   - `uninstall-scheduler` は現在の所有者を確認し、Desktop 所有である場合はエラーを返してアンインストールを拒絶しなければならない（MUST NOT uninstall Desktop-owned scheduler）。CLI 所有である場合のみアンロードおよび plist 削除を行う。
+   - macOS 環境において `uninstall-scheduler` は現在の所有者を確認し、Desktop 所有である場合はエラー（`desktop_owner_protected`）を返してアンインストールを拒絶しなければならない（MUST NOT uninstall Desktop-owned scheduler）。CLI 所有である場合のみアンロードおよび plist 削除を行う。
 
 ### CLI-CMD-005: 共有 JobStore と並行性制御
 
@@ -91,9 +92,9 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
 
 - `codex-scheduler --help` および `codex-scheduler --version` が正しく表示されること。
 - `schedule --json`, `list --json`, `show --json`, `cancel --json`, `delete --json`, `status --json` の標準出力が JSON パース可能であること。
-- CLI-only 環境で `schedule` 実行時に LaunchAgent が登録され、`owner` が `cli` となること。
-- Desktop 所有の LaunchAgent が存在する場合、CLI の `schedule` が Desktop 登録を上書きせず維持すること。
-- Desktop 所有時に `uninstall-scheduler` がエラーで終了し、LaunchAgent が保護されること。
+- macOS CLI-only 環境で `schedule` 実行時に LaunchAgent が登録され、`owner` が `cli` となること。
+- macOS において Desktop 所有の LaunchAgent が存在する場合、CLI の `schedule` が Desktop 登録を上書きせず維持すること。
+- macOS において Desktop 所有時に `uninstall-scheduler` がエラーで終了し、LaunchAgent が保護されること。
 
 ## 互換性
 

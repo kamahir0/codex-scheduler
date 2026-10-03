@@ -42,13 +42,16 @@ macOS環境において、バックグラウンド実行を担保するために
 5. **ジョブの登録・編集・削除**:
    - ジョブの追加、編集、削除、リトライ時刻更新はすべて `jobs.json` の更新のみで完結し、LaunchAgentの追加・更新・削除は行わない（MUST NOT）。
 
-### OS-SCHED-002: Windows Task Scheduler 連携
+### OS-SCHED-002: Windows Task Scheduler 連携（計画仕様 / 次期Objective候補）
 
-Windows環境において、ジョブ登録時は以下の仕様に従ってタスクを登録・管理しなければならない（MUST）。
+※ 現行バージョン（v0.4.0）のコア実装において、non-macOS プラットフォームは `FallbackScheduler`（内部no-op）として動作し、Windows Task Scheduler への常設タスク自動登録は未実装である。
+Windows Task Scheduler backend の本格統合は次期 Objective 候補とし、本仕様は将来の実装要件として定義する。
+
+Windows環境において、タスクスケジューラ連携実装時は以下の仕様に従ってタスクを登録・管理しなければならない（MUST）。
 
 1. **タスク名**: `CodexScheduler_Service`（または `CodexScheduler_<job_id>`）
 2. **登録・実行**:
-   - 定期タスク（1分間隔）として `codex-scheduler-cli tick` を登録するか、または個別タスクとして起動。
+   - 定期タスク（1分間隔）として `codex-scheduler tick` を登録するか、または個別タスクとして起動。
 3. **クリーンアップ**:
    - ジョブ完了時またはアンインストール時に適切にタスクを整理する。
 

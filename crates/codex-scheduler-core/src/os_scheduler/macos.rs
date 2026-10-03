@@ -246,27 +246,26 @@ impl MacOsLaunchdScheduler {
         false
     }
 
-    /// 実行可能ファイルが Desktop GUI アプリケーション（.app 内バイナリまたは codex-scheduler-gui）か判定
+    /// 実行可能ファイルが Desktop GUI アプリケーション（.app 内バイナリかつ codex-scheduler-gui）か判定
     pub fn is_desktop_executable(path: &Path) -> bool {
         let path_str = path.to_string_lossy();
-        if path_str.contains(".app/") {
-            return true;
-        }
+        let in_app_bundle = path_str.contains(".app/");
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            name == "codex-scheduler-gui" || name.starts_with("codex-scheduler-gui")
+            in_app_bundle && name == "codex-scheduler-gui"
         } else {
             false
         }
     }
 
-    /// 実行可能ファイルが standalone CLI バイナリ（codex-scheduler または codex-scheduler-cli）か判定
+    /// 実行可能ファイルが standalone CLI バイナリ（codex-scheduler または legacy互換名 codex-scheduler-cli）か判定
     pub fn is_cli_executable(path: &Path) -> bool {
+        let path_str = path.to_string_lossy();
+        // App bundle 内部のバイナリは standalone CLI 実行ファイルとして誤認してはならない
+        if path_str.contains(".app/") {
+            return false;
+        }
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name == "codex-scheduler"
-                || name == "codex-scheduler-cli"
-                || name.starts_with("codex-scheduler-cli")
-                || name.starts_with("codex-scheduler")
-            {
+            if name == "codex-scheduler" || name == "codex-scheduler-cli" {
                 return true;
             }
             #[cfg(test)]
@@ -281,9 +280,10 @@ impl MacOsLaunchdScheduler {
 
     // WHY: In macOS single scheduler architecture, Desktop-owned LaunchAgent must be prioritized.
     //      If the Desktop LaunchAgent plist exists on disk but is unloaded (e.g. after reboot or manual unload),
-    //      CLI must safely repair it by re-loading via launchctl without altering plist content or binary path.
+    //      CLI must safely repair it by directly re-loading via launchctl load -w without mutating plist content or binary path.
     // WHAT BREAKS: Silently ignoring unloaded state leaves scheduled jobs unexecuted in background.
     //              Overwriting Desktop plist with CLI binary breaks Desktop background Gatekeeper authorization.
+    //              Unconditionally ignoring unexpected unload failures masks broken launchd states.
     // EVIDENCE: docs/spec-changes/0015-macos-scheduler-health-and-cli-status.md, OS-SCHED-006, CLI-CMD-004
     pub fn repair_desktop_scheduler(&self) -> Result<(), SchedulerError> {
         let plist_path = self.scheduler_plist_path();
@@ -301,10 +301,7 @@ impl MacOsLaunchdScheduler {
             )));
         }
 
-        // Unload first (ignoring not-loaded errors) to ensure clean state
-        let _ = self.safe_launchctl_unload(&plist_path);
-
-        // Load existing plist with -w
+        // Directly load existing plist with -w without pre-unloading
         let path_str = plist_path.to_string_lossy();
         let output = self.runner.run_launchctl(&["load", "-w", &path_str])?;
         if !output.status.success() {
@@ -436,17 +433,64 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
             // Desktop proceeds to take over ownership and update LaunchAgent plist.
         }
 
-        // 不正・未知の設定ファイルの検査（ラベルDev.codexscheduler.schedulerでなければ未知ファイルとして保護）
+        // 不正・未知の設定ファイルの検査および Invalid owner に対する非破壊保護
         if plist_path.exists() && current_owner == SchedulerOwner::Invalid {
-            if let Ok(content) = fs::read_to_string(&plist_path) {
-                let has_label = content.contains(SCHEDULER_LABEL);
-                let has_tick = content.contains("<string>--scheduler-tick</string>");
-                if !has_label || !has_tick {
+            let content = match fs::read_to_string(&plist_path) {
+                Ok(c) => c,
+                Err(e) => {
                     return Err(SchedulerError::MalformedConfiguration(format!(
-                        "Unrecognized or malformed configuration in {}",
-                        plist_path.display()
+                        "Cannot read configuration in {}: {}",
+                        plist_path.display(),
+                        e
                     )));
                 }
+            };
+
+            let has_label = content.contains(SCHEDULER_LABEL);
+            let has_tick = content.contains("<string>--scheduler-tick</string>");
+            let exe_opt = Self::extract_executable_path_from_plist(&content);
+
+            if !has_label || !has_tick || exe_opt.is_none() {
+                // Case A: Unrecognized label, missing --scheduler-tick, or unparseable target executable
+                return Err(SchedulerError::MalformedConfiguration(format!(
+                    "Unrecognized or malformed configuration in {}",
+                    plist_path.display()
+                )));
+            }
+
+            let registered_exe = exe_opt.unwrap();
+            let exe_exists = registered_exe.is_absolute() && registered_exe.exists();
+
+            if !caller_is_desktop {
+                // WHY: CLI caller must not overwrite or takeover existing LaunchAgent when owner is Invalid.
+                //      If the registered executable is missing (stale Desktop registration) or unrecognized,
+                //      CLI must return a structured error and leave the existing plist untouched.
+                // WHAT BREAKS: Overwriting invalid/stale Desktop registrations with CLI binary breaks Desktop
+                //              precedence and causes unmanaged scheduler takeover.
+                // EVIDENCE: docs/spec-changes/0015-macos-scheduler-health-and-cli-status.md, OS-SCHED-006, CLI-CMD-004
+                if !exe_exists {
+                    // Case B: Syntactically managed plist but target executable is missing (stale registration)
+                    return Err(SchedulerError::ExecutableNotFound(format!(
+                        "Registered scheduler executable does not exist: {}",
+                        registered_exe.display()
+                    )));
+                } else {
+                    return Err(SchedulerError::MalformedConfiguration(format!(
+                        "Registered scheduler executable is invalid or unrecognized: {}",
+                        registered_exe.display()
+                    )));
+                }
+            } else {
+                // Caller is Desktop:
+                // Protect non-desktop managed registrations from accidental Desktop overwrite if unrecognized.
+                if exe_exists && !Self::is_desktop_executable(&registered_exe) {
+                    return Err(SchedulerError::MalformedConfiguration(format!(
+                        "Cannot overwrite non-desktop registration with Desktop app: {}",
+                        registered_exe.display()
+                    )));
+                }
+                // When registered Desktop executable was missing (stale registration), Desktop GUI proceeds
+                // to self-repair by rewriting plist with current valid Desktop executable.
             }
         }
 
@@ -1376,6 +1420,97 @@ mod tests {
         scheduler.ensure_scheduler_installed(&cli_exe).unwrap();
         let plist_count2 = fs::read_dir(&temp_dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.path().extension().map_or(false, |ext| ext == "plist")).count();
         assert_eq!(plist_count2, 1, "Only single LaunchAgent plist must ever exist");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_executable_classification_hardening() {
+        use std::path::Path;
+
+        // 1. Desktop: must be in .app/ and named exactly "codex-scheduler-gui"
+        assert!(!MacOsLaunchdScheduler::is_desktop_executable(Path::new("/Applications/Other.app/Contents/MacOS/foo")));
+        assert!(!MacOsLaunchdScheduler::is_desktop_executable(Path::new("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui-bar")));
+        assert!(!MacOsLaunchdScheduler::is_desktop_executable(Path::new("/usr/local/bin/codex-scheduler-gui")));
+        assert!(MacOsLaunchdScheduler::is_desktop_executable(Path::new("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui")));
+
+        // 2. CLI: must be "codex-scheduler" or legacy "codex-scheduler-cli", and NOT inside .app/
+        assert!(MacOsLaunchdScheduler::is_cli_executable(Path::new("/usr/local/bin/codex-scheduler")));
+        assert!(MacOsLaunchdScheduler::is_cli_executable(Path::new("/usr/local/bin/codex-scheduler-cli")));
+        assert!(!MacOsLaunchdScheduler::is_cli_executable(Path::new("/usr/local/bin/codex-scheduler-foo")));
+        assert!(!MacOsLaunchdScheduler::is_cli_executable(Path::new("/usr/local/bin/codex-scheduler-gui")));
+        assert!(!MacOsLaunchdScheduler::is_cli_executable(Path::new("/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler")));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_stale_target_not_overwritten_by_cli_and_atomicity() {
+        use crate::store::JobStore;
+        use crate::SchedulerService;
+        use crate::models::ProviderType;
+        use chrono::Utc;
+
+        let temp_dir = std::env::temp_dir().join(format!("test-stale-target-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. Setup a syntactically valid managed plist pointing to a Desktop executable path that does NOT exist
+        let non_existent_desktop_exe = temp_dir.join("Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui");
+        let initial_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&non_existent_desktop_exe);
+
+        let runner = MockLaunchctlRunner::new(false);
+        let scheduler = MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+        let plist_path = scheduler.scheduler_plist_path();
+        fs::write(&plist_path, &initial_content).unwrap();
+
+        // Current owner must be Invalid because target executable does not exist
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Invalid);
+        assert!(!scheduler.is_target_executable_exists());
+        assert!(!scheduler.is_owner_target_valid());
+
+        let initial_bytes = fs::read(&plist_path).unwrap();
+
+        // 2. Create real CLI executable
+        let cli_exe = temp_dir.join("codex-scheduler");
+        fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        // 3. CLI calls ensure_scheduler_installed: MUST FAIL, must NOT mutate plist, must NOT takeover to CLI
+        let ensure_res = scheduler.ensure_scheduler_installed(&cli_exe);
+        assert!(ensure_res.is_err(), "CLI ensure must fail against Invalid stale target registration");
+        match ensure_res.unwrap_err() {
+            SchedulerError::ExecutableNotFound(msg) => {
+                assert!(msg.contains("Registered scheduler executable does not exist"));
+            }
+            other => panic!("Expected ExecutableNotFound, got {:?}", other),
+        }
+
+        let bytes_after = fs::read(&plist_path).unwrap();
+        assert_eq!(initial_bytes, bytes_after, "Existing plist bytes must remain completely unchanged");
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Invalid, "Owner must remain Invalid, never become Cli");
+        assert_ne!(
+            scheduler.get_scheduler_executable_path(),
+            Some(cli_exe.clone()),
+            "Executable path in plist must NOT be replaced with CLI binary"
+        );
+
+        // 4. Verify schedule_job atomicity via SchedulerService: Job must NOT be saved to store
+        let jobs_path = temp_dir.join("jobs.json");
+        let store = JobStore::new_with_path(&jobs_path);
+        let service = SchedulerService::with_scheduler(
+            store.clone(),
+            Some(cli_exe),
+            Box::new(scheduler),
+        );
+
+        let sched_res = service.schedule_job(
+            ProviderType::Codex,
+            "session-stale-test".to_string(),
+            temp_dir.clone(),
+            Some("test prompt".to_string()),
+            Utc::now() + chrono::Duration::hours(1),
+            None,
+        );
+        assert!(sched_res.is_err(), "schedule_job must fail when scheduler is in Invalid/stale state");
+        let all_jobs = store.load_all().unwrap();
+        assert_eq!(all_jobs.len(), 0, "JobStore must remain completely empty on scheduler error");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

@@ -39,4 +39,4 @@
 
 ## Status
 
-In progress (v0.5.1 hotfix candidate).
+Complete (v0.5.1 released).

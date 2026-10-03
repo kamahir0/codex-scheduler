@@ -16,10 +16,14 @@ GitHub Releasesを通じて、macOS（DMG）およびWindows（インストー�
 
 ### DELIVERY-BUNDLE-001: 配布パッケージ形式
 
-ユーザー向け配布パッケージ形式は、一般ユーザーが迷わず直感的に選択できるよう、以下の2種類のみに厳格に限定しなければならない（MUST）。
+ユーザー向け配布パッケージ形式は、一般ユーザーおよび自動化・CLIユーザーが迷わず選択できるよう、以下の4種類（Desktop 2種 + CLI 2種）に厳格に限定しなければならない（MUST）。
 
-- **macOS**: `.dmg`（ドラッグ＆ドロップインストール可能なディスクイメージ）。Apple Silicon（M1〜M4）対応。
-- **Windows**: `.exe`（NSIS インストーラ、64-bit対応）。
+1. **Desktop Distribution**:
+   - **macOS**: `.dmg`（ドラッグ＆ドロップインストール可能なディスクイメージ）。Apple Silicon（M1〜M4）対応。
+   - **Windows**: `.exe`（NSIS インストーラ、64-bit対応）。
+2. **CLI Distribution**:
+   - **macOS**: standalone executable（Apple Silicon arm64、ad-hocコード署名済）。
+   - **Windows**: standalone executable（`codex-scheduler.exe`、64-bit対応）。
 
 #### 非公開・除外対象（Prohibited Assets）
 以下の形式は、ユーザー向けRelease assetとして公開してはならない（MUST NOT）。
@@ -75,7 +79,7 @@ Apple Developer Programの有償アカウントを使用しない完全無料オ
    - Worker CLI バイナリのビルドとリソースディレクトリへのステージング。
    - Tauri アプリおよびインストーラのビルド。
 4. **リリース公開と成果物選別**:
-   - ビルド成果物から `DELIVERY-CI-002` で規定された命名規則に従ってリネームした `.dmg` および `.exe` の2ファイルのみを明示的に選別・アップロードしなければならない（MUST）。
+   - ビルド成果物から `DELIVERY-CI-002` で規定された命名規則に従ってリネームした Desktop 2種（`.dmg`, `.exe`）および CLI 2種（standalone binary, `.exe`）の計4ファイルのみを明示的に選別・アップロードしなければならない（MUST）。
    - `*.app.tar.gz` や `*.msi` 等の不要な中間成果物が GitHub Releases に添付されてはならない（MUST NOT）。
 
 ### DELIVERY-CI-002: 成果物の命名規則
@@ -83,14 +87,22 @@ Apple Developer Programの有償アカウントを使用しない完全無料オ
 ユーザー向けRelease assetのファイル名は、以下の命名規則に完全準拠しなければならない（MUST）。
 
 ```text
-<Product>-<version>-<os>-<arch>.<ext>
+Desktop:
+Codex-Scheduler-<version>-macos-arm64.dmg
+Codex-Scheduler-<version>-windows-x64.exe
+
+CLI:
+Codex-Scheduler-CLI-<version>-macos-arm64
+Codex-Scheduler-CLI-<version>-windows-x64.exe
 ```
 
-具体的には以下の2形式のみとする：
-- macOS: `Codex-Scheduler-<version>-macos-arm64.dmg`
-- Windows: `Codex-Scheduler-<version>-windows-x64.exe`
+具体的には以下の4形式のみとする：
+- macOS Desktop: `Codex-Scheduler-<version>-macos-arm64.dmg`
+- Windows Desktop: `Codex-Scheduler-<version>-windows-x64.exe`
+- macOS CLI: `Codex-Scheduler-CLI-<version>-macos-arm64`
+- Windows CLI: `Codex-Scheduler-CLI-<version>-windows-x64.exe`
 
-（例: `Codex-Scheduler-0.2.2-macos-arm64.dmg`, `Codex-Scheduler-0.2.2-windows-x64.exe`）
+（例: `Codex-Scheduler-0.4.0-macos-arm64.dmg`, `Codex-Scheduler-CLI-0.4.0-macos-arm64`）
 
 #### 命名トークン規則
 - OS識別子: macOSは `macos`、Windowsは `windows-x64` を使用する（MUST）。

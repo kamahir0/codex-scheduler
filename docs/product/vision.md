@@ -2,7 +2,7 @@
 
 Status: Approved
 
-`codex-scheduler` は、AIコーディングツール（主にOpenAI Codex、将来的にClaude Code等を拡張可能）における利用枠（Quota / Rate Limit）枯渇時に、制限リセット時刻（深夜帯など）に合わせて外部から自動でプロンプト（`continue` 等）を送信・再開し、翌朝デスクトップアプリから同一セッションで作業を継続できるようにする、ローカルファーストのスケジュール管理デスクトップアプリケーションである。
+`codex-scheduler` は、AIコーディングツール（主にOpenAI Codex、将来的にClaude Code等を拡張可能）における利用枠（Quota / Rate Limit）枯渇時に、制限リセット時刻（深夜帯など）に合わせて外部から自動でプロンプト（`continue` 等）を送信・再開し、翌朝同一セッションで作業を継続できるようにする、ローカルファーストのスケジュール管理ツール（Desktop GUI版および独立したstandalone CLI版）である。
 
 ## Product problem / motivation
 

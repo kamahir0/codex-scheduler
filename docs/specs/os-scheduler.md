@@ -88,9 +88,31 @@ OSスケジューラ連携におけるジョブ実行予定日時（`scheduled_a
    - 定期ポーリング間隔が60秒であるため、通常運用時における実行開始は `scheduled_at` 到来後 0〜約60秒以内となる（SHOULD）。
    - ただし、OSのスリープ・復帰タイミング、システム高負荷、スケジューラプロセスのキューイング遅延等により、追加の遅延が発生することが許容される（MAY）。
 
+### OS-SCHED-006: macOS スケジューラ所有権モデルと優先度（Single Scheduler Ownership & Precedence）
+
+macOS環境において、単一常設 LaunchAgent（`dev.codexscheduler.scheduler`）の所有権（Ownership）は以下の規則に従って管理されなければならない（MUST）。
+
+1. **単一 LaunchAgent 不変条件**:
+   - システム内に登録される LaunchAgent は常に `dev.codexscheduler.scheduler` の1つのみでなければならず、複数作成してはならない（MUST NOT）。
+2. **所有権の分類（Scheduler Owner）**:
+   - `Desktop`: `ProgramArguments[0]` が有効な Desktop GUI アプリケーション（`.app` 内の実行ファイルまたは `codex-scheduler-gui`）を指している状態。
+   - `Cli`: `ProgramArguments[0]` が有効な standalone CLI 実行ファイル（`codex-scheduler` または `codex-scheduler-cli`）を指している状態。
+   - `None`: LaunchAgent plist が存在しない状態。
+   - `Legacy`: 過去バージョンの引数形式（旧 Worker 呼出等）や個別ジョブ plist が残存している状態。
+   - `Invalid`: 登録ファイルが存在するが構文が不正、または登録された実行ファイルがディスク上に存在しない状態。
+3. **優先度ルール（Precedence Rules）**:
+   - **Desktop 優先（Desktop Precedence）**: 有効な `Desktop` 所有の登録が存在する場合、CLI からのスケジューラ登録（ensure）は既存の LaunchAgent を上書きしてはならない（MUST NOT overwrite）。CLI は Desktop 所有スケジューラをそのまま維持し、ジョブ登録のみを行う。
+   - **CLI 所有からの安全な移行（Safe Migration）**: `Cli` 所有の状態で Desktop GUI が起動された場合、Desktop は LaunchAgent の実行主体をメインアプリ実行ファイルへ安全に更新・移行（takeover）してよい（MAY）。
+   - **消失した stale 登録の修復（Stale Repair）**: 登録先バイナリが存在しない既知の stale 登録（`Invalid`）は、利用可能な frontend（Desktop または CLI）が安全に自己の実行ファイルで上書き・修復できる（MAY）。
+   - **未知・破損設定の保護（Malformed Protection）**: 解析不能な未知の設定や手動破損ファイルは、デフォルトで無言上書きしてはならず（MUST NOT）、構造化されたエラーとして報告しなければならない（MUST）。
+   - **アンインストール保護（Uninstall Protection）**: CLI の `uninstall-scheduler` コマンドは、現在の所有者が `Desktop` である場合はアンインストールを実行してはならず（MUST NOT）、エラーを返して Desktop スケジューラを保護しなければならない（MUST）。
+
 ## 検証ルール
 
 - 単一常設plistファイルが正しい構文（XML）および `StartInterval: 60` で出力されることをユニットテストで検証する。
 - 登録処理が冪等であり、既存登録時に重複してコマンド実行されないことを検証する。
 - レガシーplist（`com.codexscheduler.job.*.plist`）の検出および削除処理を検証する。
 - `tick` コマンドで期限到来ジョブ（Scheduled / Retrying）が正しく実行され、期限未到来ジョブおよび終端ステータスがスキップされることを検証する。
+- 所有権判定（Desktop / Cli / None / Legacy / Invalid）が正しく機能することを検証する。
+- Desktop 所有時に CLI の `ensure` が上書きせず維持されること、および `uninstall` が保護エラーとなることを検証する。
+- CLI 所有時に Desktop の `ensure` が安全に Desktop 所有へ移行することを検証する。

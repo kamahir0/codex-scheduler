@@ -1,14 +1,15 @@
 import React from "react";
 import { Row, Col, Card, Statistic } from "antd";
 import { Clock, Calendar, CheckCircle2, AlertCircle } from "lucide-react";
-import { Job } from "../types";
+import { Job, SystemInfo } from "../types";
 import dayjs from "dayjs";
 
 interface MetricCardsProps {
   jobs: Job[];
+  systemInfo?: SystemInfo | null;
 }
 
-export const MetricCards: React.FC<MetricCardsProps> = ({ jobs }) => {
+export const MetricCards: React.FC<MetricCardsProps> = ({ jobs, systemInfo }) => {
   const activeJobs = jobs.filter((j) => j.status === "scheduled" || j.status === "retrying");
   const runningJobs = jobs.filter((j) => j.status === "running");
   const succeededJobs = jobs.filter((j) => j.status === "succeeded");
@@ -25,6 +26,10 @@ export const MetricCards: React.FC<MetricCardsProps> = ({ jobs }) => {
     ? nextJob.time.format("HH:mm (MM/DD)")
     : "予定なし";
 
+  const nextRunTitle = systemInfo?.os === "macos"
+    ? "次回自動実行"
+    : "次回予定（参考）";
+
   return (
     <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
       <Col xs={24} sm={12} md={6}>
@@ -32,7 +37,7 @@ export const MetricCards: React.FC<MetricCardsProps> = ({ jobs }) => {
           <Statistic
             title={
               <span style={{ display: "flex", alignItems: "center", gap: 6, cursor: "default" }}>
-                <Clock size={16} color="#1677ff" /> 次回自動実行
+                <Clock size={16} color="#1677ff" /> {nextRunTitle}
               </span>
             }
             value={nextRunStr}

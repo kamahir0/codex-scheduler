@@ -99,7 +99,11 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
       };
 
       await onSubmit(payload);
-      message.success("ジョブをスケジュールしました");
+      if (systemInfo?.os === "macos") {
+        message.success("ジョブをスケジュールしました");
+      } else {
+        message.success("ジョブを保存しました（Windowsでは自動実行されません）");
+      }
       form.resetFields();
       onCancel();
     } catch (e: any) {
@@ -114,7 +118,7 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
       title={
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Sparkles size={20} color="#1677ff" />
-          <span>新しい再開ジョブをスケジュール</span>
+          <span>{systemInfo?.os === "macos" ? "新しい再開ジョブをスケジュール" : "新しいジョブを登録・保存"}</span>
         </div>
       }
       open={open}
@@ -123,13 +127,23 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
       width={620}
       destroyOnClose
     >
-      <Alert
-        message="セッションの自動再開スケジュール"
-        description="Codexデスクトップアプリで停止したセッションのIDと作業ディレクトリを入力してください。指定時刻以降、次回の定期チェック時（通常1分以内）にOSバックグラウンドで自動的に 'continue' を送信し、同一セッションの続きから作業を再開できます。"
-        type="info"
-        showIcon
-        style={{ marginBottom: 20 }}
-      />
+      {systemInfo?.os === "macos" ? (
+        <Alert
+          message="セッションの自動再開スケジュール"
+          description="Codexデスクトップアプリで停止したセッションのIDと作業ディレクトリを入力してください。指定時刻以降、次回の定期チェック時（通常1分以内）にOSバックグラウンドで自動的に 'continue' を送信し、同一セッションの続きから作業を再開できます。"
+          type="info"
+          showIcon
+          style={{ marginBottom: 20 }}
+        />
+      ) : (
+        <Alert
+          message="【Windows環境】常設スケジューラ未対応（手動実行・管理用）"
+          description="Windows環境では現行バージョンにおいてTask Scheduler常設連携は未対応です。登録したジョブは指定時刻になってもバックグラウンドで自動実行されません。手動実行（一覧の「今すぐ実行」）用として保存・管理されます。"
+          type="warning"
+          showIcon
+          style={{ marginBottom: 20 }}
+        />
+      )}
 
       <Form form={form} layout="vertical" onFinish={handleFinish}>
         <Form.Item label="AI プロバイダ" name="provider" initialValue="codex">
@@ -186,10 +200,14 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
         </Form.Item>
 
         <Form.Item
-          label="実行予定日時（最早開始日時）"
+          label={systemInfo?.os === "macos" ? "実行予定日時（最早開始日時）" : "予定日時（参考）"}
           name="scheduled_at"
           rules={[{ required: true, message: "実行日時を選択してください" }]}
-          extra="指定時刻を過ぎた後、次回のスケジューラ確認時（通常1分以内）に実行が開始されます。"
+          extra={
+            systemInfo?.os === "macos"
+              ? "指定時刻を過ぎた後、次回のスケジューラ確認時（通常1分以内）に実行が開始されます。"
+              : "※Windows環境では指定時刻になっても自動実行されません（手動実行用の目安時刻として保存されます）。"
+          }
         >
           <DatePicker
             showTime={{ format: "HH:mm" }}
@@ -295,7 +313,7 @@ export const CreateJobModal: React.FC<CreateJobModalProps> = ({
           <Space>
             <Button onClick={onCancel}>キャンセル</Button>
             <Button type="primary" htmlType="submit" loading={loading}>
-              ジョブをスケジュール登録
+              {systemInfo?.os === "macos" ? "ジョブをスケジュール登録" : "ジョブを保存"}
             </Button>
           </Space>
         </Form.Item>

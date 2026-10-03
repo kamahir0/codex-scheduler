@@ -135,7 +135,7 @@ jobs:
             - macOS Apple Silicon (M1以降)
               `Codex-Scheduler-CLI-${{ steps.version.outputs.version }}-macos-arm64`
 
-            ※ Windows での予約実行は Desktop GUI アプリケーションをご利用ください（CLI単体でのTask Scheduler常設登録は今後のアップデートで提供予定です）。
+            ※ Windows版では現行バージョンにおいてTask Schedulerによる常設自動実行は未対応です。Desktop GUIでジョブ管理・手動実行を利用できます（常設自動実行は今後のアップデートで対応予定です）。
 
             インストール後の起動・権限設定・CLIの使い方は [セットアップガイド](https://github.com/${{ github.repository }}/blob/main/docs/setup-guide.md) をご覧ください。
           draft: false

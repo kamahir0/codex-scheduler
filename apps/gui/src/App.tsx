@@ -342,7 +342,7 @@ export const App: React.FC = () => {
           )}
 
           <div style={{ flexShrink: 0 }}>
-            <MetricCards jobs={jobs} />
+            <MetricCards jobs={jobs} systemInfo={systemInfo} />
           </div>
 
           <div
@@ -374,7 +374,9 @@ export const App: React.FC = () => {
                   登録済みジョブ一覧
                 </Title>
                 <Text type="secondary" style={{ fontSize: 12, cursor: "default" }}>
-                  OSスケジューラ（launchd / Task Scheduler）により、PCが待機状態でも指定時刻以降（通常1分以内）にバックグラウンド実行されます
+                  {systemInfo?.os === "macos"
+                    ? "OSスケジューラ（launchd LaunchAgent）により、PCが待機状態でも指定時刻以降（通常1分以内）にバックグラウンド実行されます"
+                    : "Windows環境ではTask Scheduler常設連携は未対応です（指定時刻の自動バックグラウンド実行は行われません。現行バージョンではジョブ管理・手動実行用となります）"}
                 </Text>
               </div>
             </div>

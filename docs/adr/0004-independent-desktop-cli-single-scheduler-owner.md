@@ -15,8 +15,8 @@ Codex Scheduler はこれまで macOS の Gatekeeper 対策として「1 App / 1
 ## 決定（Decision）
 
 1. **独立した2つの正式ディストリビューション（Independent Distributions）**:
-   - **Desktop distribution**: GUI アプリケーション（`Codex Scheduler.app` / Windows インストーラ）。単体で予約実行が完結し、CLI に依存しない。
-   - **CLI distribution**: standalone CLI（`codex-scheduler`）。単体で予約実行が完結し、Desktop に依存しない。
+   - **Desktop distribution**: GUI アプリケーション（`Codex Scheduler.app` / Windows インストーラ）。macOS において単体で常設予約実行が完結し、CLI に依存しない（Windows 環境では現行バージョンにおいてアプリ起動中管理・手動実行に対応し、Task Scheduler 常設連携は次期候補）。
+   - **CLI distribution**: standalone CLI（`codex-scheduler`）。macOS において単体で予約実行が完結し、Desktop に依存しない（Windows standalone CLI は Task Scheduler 常設未対応のため正式配布対象外）。
 2. **共有コアと共有 JobStore（Shared Core & Shared JobStore）**:
    - データストアは一元化し、常に `~/.codex-scheduler/jobs.json` を共有する。
    - ジョブモデル、バリデーション、ファイルロック、アトミッククレーム、リトライ判定、Codex アダプタ、実行履歴、tick 実行ロジックはすべて `codex-scheduler-core` で一元管理し、ロジックの複製を禁止する。

@@ -38,7 +38,20 @@ impl MacOsLaunchdScheduler {
     }
 
     pub fn generate_scheduler_plist_content(cli_path: &Path) -> String {
-        let cli_str = cli_path.to_string_lossy();
+        let resolved_path = if cli_path.is_absolute() {
+            cli_path.to_path_buf()
+        } else {
+            crate::worker::canonical_worker_path()
+        };
+        let cli_str = resolved_path.to_string_lossy();
+        let home_dir = dirs::home_dir()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/Users".to_string());
+        let path_env = format!(
+            "{}/.local/bin:{}/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            home_dir, home_dir
+        );
+
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -51,6 +64,15 @@ impl MacOsLaunchdScheduler {
         <string>{cli_str}</string>
         <string>tick</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{path_env}</string>
+        <key>HOME</key>
+        <string>{home_dir}</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>{home_dir}</string>
     <key>StartInterval</key>
     <integer>60</integer>
     <key>RunAtLoad</key>
@@ -65,6 +87,8 @@ impl MacOsLaunchdScheduler {
 </plist>"#,
             label = SCHEDULER_LABEL,
             cli_str = cli_str,
+            path_env = path_env,
+            home_dir = home_dir,
         )
     }
 
@@ -114,13 +138,29 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
         let plist_path = self.scheduler_plist_path();
         let expected_content = Self::generate_scheduler_plist_content(cli_path);
 
-        // 既に同内容のplistが存在する場合は launchctl load をスキップ（冪等性 & 通知抑制）
+        // 既に同内容のplistが存在し、かつ正常にlaunchctlに登録されていればスキップ
         if plist_path.exists() {
             if let Ok(existing) = fs::read_to_string(&plist_path) {
                 if existing == expected_content {
-                    return Ok(());
+                    let check = Command::new("launchctl")
+                        .arg("list")
+                        .arg(SCHEDULER_LABEL)
+                        .output();
+                    if let Ok(out) = check {
+                        if out.status.success() {
+                            return Ok(());
+                        }
+                    }
                 }
             }
+        }
+
+        // 既存の登録があれば一旦アンロード
+        if plist_path.exists() {
+            let _ = Command::new("launchctl")
+                .arg("unload")
+                .arg(&plist_path)
+                .output();
         }
 
         // 新規作成または内容更新時のみ書き込み＆ロード
@@ -190,6 +230,8 @@ mod tests {
         assert!(plist.contains("<string>tick</string>"));
         assert!(plist.contains("<key>StartInterval</key>\n    <integer>60</integer>"));
         assert!(plist.contains("<key>RunAtLoad</key>\n    <true/>"));
+        assert!(plist.contains("<key>EnvironmentVariables</key>"));
+        assert!(plist.contains("<key>PATH</key>"));
     }
 
     #[test]

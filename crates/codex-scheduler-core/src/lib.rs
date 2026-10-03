@@ -32,11 +32,28 @@ pub enum CoreError {
 pub struct SchedulerService {
     store: JobStore,
     cli_path: PathBuf,
+    scheduler: std::sync::Arc<dyn os_scheduler::SchedulerBackend>,
 }
 
 impl SchedulerService {
     pub fn new(store: JobStore, cli_path: PathBuf) -> Self {
-        Self { store, cli_path }
+        Self {
+            store,
+            cli_path,
+            scheduler: std::sync::Arc::from(get_platform_scheduler()),
+        }
+    }
+
+    pub fn with_scheduler(
+        store: JobStore,
+        cli_path: PathBuf,
+        scheduler: Box<dyn os_scheduler::SchedulerBackend>,
+    ) -> Self {
+        Self {
+            store,
+            cli_path,
+            scheduler: std::sync::Arc::from(scheduler),
+        }
     }
 
     pub fn default_service() -> Result<Self, CoreError> {
@@ -55,14 +72,12 @@ impl SchedulerService {
     }
 
     pub fn ensure_scheduler(&self) -> Result<(), CoreError> {
-        let os_sched = get_platform_scheduler();
-        os_sched.ensure_scheduler_installed(&self.cli_path)?;
+        self.scheduler.ensure_scheduler_installed(&self.cli_path)?;
         Ok(())
     }
 
     pub fn is_scheduler_installed(&self) -> bool {
-        let os_sched = get_platform_scheduler();
-        os_sched.is_scheduler_installed()
+        self.scheduler.is_scheduler_installed()
     }
 
     pub fn schedule_job(
@@ -94,15 +109,13 @@ impl SchedulerService {
         self.store.update_job(&job)?;
 
         // 旧バージョンのレガシー個別plistが残っていた場合の後始末
-        let os_sched = get_platform_scheduler();
-        let _ = os_sched.unregister_job(job_id);
+        let _ = self.scheduler.unregister_job(job_id);
 
         Ok(job)
     }
 
     pub fn delete_job(&self, job_id: &str) -> Result<bool, CoreError> {
-        let os_sched = get_platform_scheduler();
-        let _ = os_sched.unregister_job(job_id);
+        let _ = self.scheduler.unregister_job(job_id);
         Ok(self.store.delete_job(job_id)?)
     }
 

@@ -81,11 +81,12 @@ impl CodexAdapter {
             .stderr(Stdio::piped());
 
         // Augment PATH with common directories in case launchd stripped it
-        if let Ok(current_path) = std::env::var("PATH") {
-            let extra = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
-            let new_path = format!("{}:{}", current_path, extra);
-            cmd.env("PATH", new_path);
-        }
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let home_bin = dirs::home_dir()
+            .map(|h| format!("{}:{}", h.join(".local/bin").display(), h.join(".cargo/bin").display()))
+            .unwrap_or_default();
+        let new_path = format!("{}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{}", current_path, home_bin);
+        cmd.env("PATH", new_path);
 
         let output = cmd.output().await.map_err(AdapterError::ProcessError)?;
 

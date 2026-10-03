@@ -10,7 +10,11 @@ async fn test_full_scheduler_workflow() {
     let store_path = temp_dir.path().join("test_jobs.json");
     let store = JobStore::new_with_path(store_path);
 
-    let service = SchedulerService::new(store.clone(), PathBuf::from("codex-scheduler-cli"));
+    let service = SchedulerService::with_scheduler(
+        store.clone(),
+        PathBuf::from("codex-scheduler-cli"),
+        Box::new(codex_scheduler_core::os_scheduler::FallbackScheduler),
+    );
 
     // 1. Schedule a job
     let scheduled_time = Utc::now() + chrono::Duration::hours(2);
@@ -74,7 +78,11 @@ async fn test_tick_due_and_future_jobs_filter() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store_path = temp_dir.path().join("test_tick_jobs.json");
     let store = JobStore::new_with_path(store_path);
-    let service = SchedulerService::new(store.clone(), PathBuf::from("codex-scheduler-cli"));
+    let service = SchedulerService::with_scheduler(
+        store.clone(),
+        PathBuf::from("codex-scheduler-cli"),
+        Box::new(codex_scheduler_core::os_scheduler::FallbackScheduler),
+    );
 
     // 過去時刻のジョブ（期限到来）
     let past_time = Utc::now() - chrono::Duration::minutes(5);

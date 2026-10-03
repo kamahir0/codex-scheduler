@@ -82,7 +82,7 @@ mod tests {
         Job::new(
             ProviderType::Codex,
             "session-test".to_string(),
-            PathBuf::from("/tmp"),
+            std::env::temp_dir(),
             None,
             Utc::now(),
             Some(RetryPolicy {

@@ -181,7 +181,7 @@ mod tests {
         let res = Job::new(
             ProviderType::Codex,
             "sess-abc".to_string(),
-            PathBuf::from("/tmp"),
+            std::env::temp_dir(),
             None,
             Utc::now(),
             None,

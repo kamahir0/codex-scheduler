@@ -8,14 +8,15 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
 
 [GitHub Releases](https://github.com/kamahir0/codex-scheduler/releases) の最新リリース（Latest Release）ページから、ご使用のOSに合ったインストーラをダウンロードします。
 
-### 配布パッケージ一覧（4種類）
+### 配布パッケージ一覧（3種類）
 
 | 種別 | OS / アーキテクチャ | ダウンロードファイル | 説明 |
 | :--- | :--- | :--- | :--- |
 | **Desktop GUI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-<version>-macos-arm64.dmg` | GUIデスクトップアプリ（単体で予約実行完結） |
 | **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ（単体で予約実行完結） |
 | **Standalone CLI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLI実行ファイル（GUI不要、単体で予約実行完結） |
-| **Standalone CLI** | Windows (64-bit) | `Codex-Scheduler-CLI-<version>-windows-x64.exe` | 単体CLI実行ファイル（GUI不要、単体で予約実行完結） |
+
+※ Windows 環境における自動予約実行は Desktop GUI アプリケーションをご利用ください（Windows CLI 単体での Task Scheduler 常設統合は次期アップデートでの対応を予定しています）。
 
 ---
 
@@ -98,6 +99,15 @@ GUI不要の環境やCI/CD、スクリプト自動化向けに、単一バイナ
    ```bash
    codex-scheduler --version
    ```
+
+#### 【重要】macOS Gatekeeper で実行拒否された場合（ブラウザダウンロード時）
+Webブラウザ経由でダウンロードした場合、macOSにより隔離属性（`com.apple.quarantine`）が付与され、初回実行時に「開発元を確認できないため開けません」または「悪質なソフトウェア...」と Gatekeeper によりブロックされることがあります。
+
+本プロジェクトのセキュリティ原則に従い、**CLI 自身による隔離属性の自動解除は行いません**。ブロックされた場合は、ユーザー自身がターミナルで以下のコマンドを明示的に実行して隔離属性を解除してください：
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/codex-scheduler
+```
+※ アプリやCLIバイナリの更新時、または macOS のアップデート時には、再度明示的な解除が必要となる場合があります（更新後も永久に再許可不要であることは保証されません）。
 
 ### 主なコマンド
 - **ジョブの新規予約**:

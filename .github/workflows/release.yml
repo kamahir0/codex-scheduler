@@ -105,13 +105,6 @@ jobs:
             fi
             echo "Found NSIS EXE: $SRC"
             cp "$SRC" "release-assets/Codex-Scheduler-${VER}-windows-x64.exe"
-
-            CLI_SRC="target/${{ matrix.target }}/release/codex-scheduler.exe"
-            if [ ! -f "$CLI_SRC" ]; then
-              echo "Error: Windows CLI binary not found at $CLI_SRC" >&2
-              exit 1
-            fi
-            cp "$CLI_SRC" "release-assets/Codex-Scheduler-CLI-${VER}-windows-x64.exe"
           fi
           echo "Staged release assets:"
           ls -la release-assets/
@@ -127,7 +120,7 @@ jobs:
           body: |
             ## Codex Scheduler ${{ github.ref_name }}
 
-            AIコーディングツール（Codex）利用枠リセット時 自動再開ツール（Desktop & CLI）
+            AIコーディングツール（Codex）利用枠リセット時 自動再開ツール（Desktop & macOS Standalone CLI）
 
             ### Download
 
@@ -142,8 +135,7 @@ jobs:
             - macOS Apple Silicon (M1以降)
               `Codex-Scheduler-CLI-${{ steps.version.outputs.version }}-macos-arm64`
 
-            - Windows 64-bit
-              `Codex-Scheduler-CLI-${{ steps.version.outputs.version }}-windows-x64.exe`
+            ※ Windows での予約実行は Desktop GUI アプリケーションをご利用ください（CLI単体でのTask Scheduler常設登録は今後のアップデートで提供予定です）。
 
             インストール後の起動・権限設定・CLIの使い方は [セットアップガイド](https://github.com/${{ github.repository }}/blob/main/docs/setup-guide.md) をご覧ください。
           draft: false

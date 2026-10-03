@@ -58,11 +58,11 @@ Status: Approved
     - Diagnostics UI も ownership model を認識し、所有者（Desktop / CLI）を表示する。
   - **Release Assets**:
     - Desktop: `Codex-Scheduler-<version>-macos-arm64.dmg`, `Codex-Scheduler-<version>-windows-x64.exe`
-    - CLI: `Codex-Scheduler-CLI-<version>-macos-arm64`, `Codex-Scheduler-CLI-<version>-windows-x64.exe`
+    - CLI: `Codex-Scheduler-CLI-<version>-macos-arm64`（Windows standalone CLI は Task Scheduler 常設バックエンド未統合のため正式配布対象外とし、Windows では Desktop distribution による予約実行をサポート）
     - macOS CLI アセットは standalone executable として提供し、ad-hoc 署名を適用。
     - インストール案内は user-local 方式（`~/.local/bin/codex-scheduler`）を第一候補とし、sudo 必須にしない。shell rc の自動編集は禁止。
   - **Non-scope**:
-    - In-app updater、HTTP/常駐ネットワークサーバー、`xattr -d com.apple.quarantine` 自動実行は明示的スコープ外。
+    - In-app updater、HTTP/常駐ネットワークサーバー、`xattr -d com.apple.quarantine` 自動実行、Windows Task Scheduler CLI 単体常設統合は明示的スコープ外。
 - **Agent Decision**:
   - `SchedulerOwner` 列挙型を `codex-scheduler-core::os_scheduler` に定義（`Desktop`, `Cli`, `None`, `Legacy`, `Invalid`）。
   - macOS における所有者判定は、`dev.codexscheduler.scheduler.plist` の `ProgramArguments` を解析し、登録されたバイナリが macOS App bundle（`.app` 内の実行ファイルまたは `codex-scheduler-gui`）か standalone CLI（`codex-scheduler` または `codex-scheduler-cli`）か、あるいは実在しない/旧形式かを厳格に識別する。

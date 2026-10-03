@@ -56,7 +56,8 @@
 | **Desktop GUI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-<version>-macos-arm64.dmg` | GUIデスクトップアプリ |
 | **Desktop GUI** | Windows (64-bit) | `Codex-Scheduler-<version>-windows-x64.exe` | GUIデスクトップインストーラ |
 | **Standalone CLI** | macOS (Apple Silicon M1〜M4) | `Codex-Scheduler-CLI-<version>-macos-arm64` | 単体CLI実行ファイル (`codex-scheduler`) |
-| **Standalone CLI** | Windows (64-bit) | `Codex-Scheduler-CLI-<version>-windows-x64.exe` | 単体CLI実行ファイル (`codex-scheduler.exe`) |
+
+※ Windows 環境における自動予約実行は Desktop GUI アプリケーションをご利用ください（CLI単体でのTask Scheduler常設登録は今後のアップデートで提供予定です）。
 
 ### 前提条件
 本スケジューラはバックグラウンドで `codex` コマンドを実行します。端末に OpenAI Codex CLI がインストールされていることを確認してください。
@@ -78,7 +79,7 @@ codex --version
 > [!NOTE]
 > Microsoft Defender SmartScreen が表示された場合は、「詳細情報」をクリックしてから「実行」を選択してください。
 
-### Standalone CLI の場合 (`codex-scheduler`)
+### Standalone CLI の場合 (macOS Apple Silicon: `codex-scheduler`)
 Releases からバイナリをダウンロードし、実行権限を付与して PATH の通った場所に配置します：
 ```bash
 chmod +x Codex-Scheduler-CLI-*-macos-arm64

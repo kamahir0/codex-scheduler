@@ -29,8 +29,8 @@
   - `apps/gui/src/components/DiagnosticsModal.tsx`: スケジューラ所有者（Desktop / CLI）およびステータスの表示。
   - 起動時に CLI owner が存在する場合の Desktop owner への自動 migration。
 - **Slice 5: リリースパイプライン & ドキュメント更新**:
-  - `.github/workflows/release.yml`: Desktop 2 assets (macOS DMG, Windows EXE) + standalone CLI 2 assets (macOS arm64 standalone binary, Windows x64 EXE) の計4アセットのビルド・ステージング。
-  - `docs/setup-guide.md`, `README.md`: Desktop only / CLI only / 共存環境のインストール・利用ガイドの更新。
+  - `.github/workflows/release.yml`: Desktop 2 assets (macOS DMG, Windows EXE) + standalone CLI 1 asset (macOS arm64 standalone binary) の計3アセットのビルド・ステージング。
+  - `docs/setup-guide.md`, `README.md`: Desktop only / CLI only / 共存環境のインストール・利用ガイドの更新（macOS CLI quarantine手動解除ガイダンスを含む）。
 - **Slice 6: 検証 & テスト**:
   - 所有権優先度・共存マトリクス、CLI JSON出力、相互運用性（CLI作成->Desktop実行等）のユニット・統合テスト。
   - `cargo xtask check-rationale`, `cargo xtask check-all` の合格。
@@ -50,6 +50,6 @@
 - HTTPサーバー / リモートリスナー / Webhook / クラウド中継等の常駐ネットワークサーバー機能の追加。
 - `xattr -d com.apple.quarantine` のアプリ/CLIによる自動実行（Gatekeeper/Quarantineの手動解除ガイダンスに留める）。
 - Homebrew formula、npmパッケージ、cargo-install等の外部ディストリビューション機構の構築。
-- Windows Task Schedulerの大規模リファクタ（macOS ownershipモデルに集中しWindows互換性を維持）。
+- Windows Task Scheduler と CLI 単体常設スケジューラの統合（macOS ownershipモデルに集中し、Windows CLI 単体常設バックエンドは次期 Objective 候補とする）。
 - `jobs.json` の破壊的スキーマ変更。
 - exact-time スケジューラへの変更（OS-SCHED-005 Earliest Execution Time を維持）。

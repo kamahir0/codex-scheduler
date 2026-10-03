@@ -71,6 +71,7 @@ one knowledge, one owner。入口文書、Current Objective、Development State�
 - Approved implementation: [`skills/implement-spec/SKILL.md`](skills/implement-spec/SKILL.md)
 - self-review / final verification: [`skills/review-code/SKILL.md`](skills/review-code/SKILL.md)
 - release automation: [`skills/release/SKILL.md`](skills/release/SKILL.md)
+- CLI operation / agent automation: [`skills/scheduler-cli/SKILL.md`](skills/scheduler-cli/SKILL.md)
 - implementation rationale: [`docs/contributing/implementation-rationale.md`](docs/contributing/implementation-rationale.md)
 
 ## Architecture anchors

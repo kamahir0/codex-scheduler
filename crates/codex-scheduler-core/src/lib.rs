@@ -54,6 +54,17 @@ impl SchedulerService {
         &self.cli_path
     }
 
+    pub fn ensure_scheduler(&self) -> Result<(), CoreError> {
+        let os_sched = get_platform_scheduler();
+        os_sched.ensure_scheduler_installed(&self.cli_path)?;
+        Ok(())
+    }
+
+    pub fn is_scheduler_installed(&self) -> bool {
+        let os_sched = get_platform_scheduler();
+        os_sched.is_scheduler_installed()
+    }
+
     pub fn schedule_job(
         &self,
         provider: ProviderType,
@@ -65,9 +76,8 @@ impl SchedulerService {
     ) -> Result<Job, CoreError> {
         let job = Job::new(provider, session_id, cwd, prompt, scheduled_at, retry_policy)?;
 
-        // Register with OS scheduler
-        let os_sched = get_platform_scheduler();
-        let _ = os_sched.register_job(&job, &self.cli_path);
+        // Ensure persistent OS scheduler service is installed (no-op if already present)
+        let _ = self.ensure_scheduler();
 
         // Save to store
         self.store.insert_job(job.clone())?;
@@ -83,6 +93,7 @@ impl SchedulerService {
         job.set_status(JobStatus::Cancelled);
         self.store.update_job(&job)?;
 
+        // 旧バージョンのレガシー個別plistが残っていた場合の後始末
         let os_sched = get_platform_scheduler();
         let _ = os_sched.unregister_job(job_id);
 
@@ -143,18 +154,11 @@ impl SchedulerService {
         let action = RetryEngine::apply_evaluation(&mut job, &exec_result);
 
         match action {
-            NextAction::CompleteSuccess => {
-                let os_sched = get_platform_scheduler();
-                let _ = os_sched.unregister_job(&job.id);
-            }
-            NextAction::CompleteFailure(_) => {
-                let os_sched = get_platform_scheduler();
-                let _ = os_sched.unregister_job(&job.id);
-            }
+            NextAction::CompleteSuccess => {}
+            NextAction::CompleteFailure(_) => {}
             NextAction::RetryAfter(next_time) => {
                 job.scheduled_at = next_time;
-                let os_sched = get_platform_scheduler();
-                let _ = os_sched.register_job(&job, &self.cli_path);
+                // 次回tickで拾われるため、OSスケジューラの再登録・通知は発生させない
             }
         }
 

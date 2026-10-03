@@ -67,6 +67,12 @@ enum Commands {
         /// Job UUID
         job_id: String,
     },
+    /// Check and execute any scheduled jobs that have reached their target time (called periodically by LaunchAgent)
+    Tick,
+    /// Ensure the persistent OS scheduler LaunchAgent/Task is installed
+    InstallScheduler,
+    /// Uninstall the persistent OS scheduler LaunchAgent/Task
+    UninstallScheduler,
 }
 
 #[tokio::main]
@@ -194,6 +200,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 eprintln!("Job {} was not found.", job_id);
             }
+        }
+        Commands::Tick => {
+            let jobs = service.store().load_all()?;
+            let now = Utc::now();
+            let mut due_count = 0;
+
+            for job in jobs {
+                if job.status == codex_scheduler_core::models::JobStatus::Scheduled && job.scheduled_at <= now {
+                    println!("[Tick] Executing due job: {} (scheduled for {})", job.id, job.scheduled_at);
+                    match service.execute_job(&job.id).await {
+                        Ok(finished) => {
+                            println!("[Tick] Job {} finished with status: {:?}", finished.id, finished.status);
+                            due_count += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("[Tick] Error executing job {}: {}", job.id, e);
+                        }
+                    }
+                }
+            }
+
+            if due_count > 0 {
+                println!("[Tick] Completed execution for {} due job(s).", due_count);
+            }
+        }
+        Commands::InstallScheduler => {
+            service.ensure_scheduler()?;
+            println!("Persistent OS scheduler service installed and active.");
+        }
+        Commands::UninstallScheduler => {
+            let os_sched = codex_scheduler_core::os_scheduler::get_platform_scheduler();
+            os_sched.uninstall_scheduler()?;
+            println!("Persistent OS scheduler service uninstalled.");
         }
     }
 

@@ -31,6 +31,7 @@ pub struct SystemInfo {
     pub codex_path: Option<String>,
     pub cli_worker_path: String,
     pub cli_worker_installed: bool,
+    pub scheduler_installed: bool,
     pub jobs_store_path: String,
 }
 
@@ -109,6 +110,7 @@ fn provision_worker(state: State<'_, AppState>) -> Result<String, String> {
     let mut service = state.service.lock().map_err(|e| e.to_string())?;
     let store = service.store().clone();
     *service = SchedulerService::new(store, path.clone());
+    let _ = service.ensure_scheduler();
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -131,6 +133,7 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
 
     let cli_worker_path = service.cli_path().to_string_lossy().to_string();
     let cli_worker_installed = service.cli_path().is_file();
+    let scheduler_installed = service.is_scheduler_installed();
     let jobs_store_path = service.store().path().to_string_lossy().to_string();
 
     Ok(SystemInfo {
@@ -140,6 +143,7 @@ fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
         codex_path,
         cli_worker_path,
         cli_worker_installed,
+        scheduler_installed,
         jobs_store_path,
     })
 }
@@ -149,6 +153,8 @@ pub fn run() {
     let worker_path = codex_scheduler_core::worker::ensure_worker_installed()
         .unwrap_or_else(|_| codex_scheduler_core::worker::canonical_worker_path());
     let service = SchedulerService::new(store, worker_path);
+    // アプリ起動時に単一常設LaunchAgentを確実に登録（登録済みなら再ロードせずスキップ）
+    let _ = service.ensure_scheduler();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

@@ -69,3 +69,58 @@ async fn test_worker_provisioning_and_scheduler_integration() {
     assert_eq!(service.cli_path(), dummy_worker.as_path());
 }
 
+#[tokio::test]
+async fn test_tick_due_and_future_jobs_filter() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let store_path = temp_dir.path().join("test_tick_jobs.json");
+    let store = JobStore::new_with_path(store_path);
+    let service = SchedulerService::new(store.clone(), PathBuf::from("codex-scheduler-cli"));
+
+    // 過去時刻のジョブ（期限到来）
+    let past_time = Utc::now() - chrono::Duration::minutes(5);
+    let due_job = service
+        .schedule_job(
+            ProviderType::Codex,
+            "session-due".to_string(),
+            temp_dir.path().to_path_buf(),
+            Some("continue".to_string()),
+            past_time,
+            None,
+        )
+        .unwrap();
+
+    // 未来時刻のジョブ（まだ待機）
+    let future_time = Utc::now() + chrono::Duration::hours(2);
+    let future_job = service
+        .schedule_job(
+            ProviderType::Codex,
+            "session-future".to_string(),
+            temp_dir.path().to_path_buf(),
+            Some("continue".to_string()),
+            future_time,
+            None,
+        )
+        .unwrap();
+
+    // tick 相当の判定ロジックを検証
+    let all_jobs = store.load_all().unwrap();
+    let now = Utc::now();
+
+    let due_jobs: Vec<_> = all_jobs
+        .iter()
+        .filter(|j| j.status == JobStatus::Scheduled && j.scheduled_at <= now)
+        .collect();
+
+    assert_eq!(due_jobs.len(), 1);
+    assert_eq!(due_jobs[0].id, due_job.id);
+
+    let future_jobs: Vec<_> = all_jobs
+        .iter()
+        .filter(|j| j.status == JobStatus::Scheduled && j.scheduled_at > now)
+        .collect();
+
+    assert_eq!(future_jobs.len(), 1);
+    assert_eq!(future_jobs[0].id, future_job.id);
+}
+
+

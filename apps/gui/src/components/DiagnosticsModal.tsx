@@ -90,10 +90,21 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
             {systemInfo.jobs_store_path}
           </Text>
         </Descriptions.Item>
+        <Descriptions.Item label="OSスケジューラ常設サービス">
+          {systemInfo.scheduler_installed ? (
+            <Tag color="green">
+              {systemInfo.os === "macos"
+                ? "登録済 (単一LaunchAgent: dev.codexscheduler.scheduler)"
+                : "登録済 (Task Scheduler)"}
+            </Tag>
+          ) : (
+            <Tag color="orange">未登録 (起動時またはジョブ作成時に自動登録)</Tag>
+          )}
+        </Descriptions.Item>
         <Descriptions.Item label="OSスケジューラ権限">
           <Tag color="cyan">
             {systemInfo.os === "macos"
-              ? "macOS LaunchAgent (管理者権限不要)"
+              ? "macOS LaunchAgent (管理者権限不要・通知初回のみ)"
               : "Windows Task Scheduler"}
           </Tag>
         </Descriptions.Item>
@@ -101,10 +112,8 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
 
       <div style={{ marginTop: 20, padding: 12, background: "rgba(0,0,0,0.02)", borderRadius: 6 }}>
         <Paragraph style={{ margin: 0, fontSize: 12, color: "#8c8c8c" }}>
-          ※ <strong>完全無料配布・権限維持アーキテクチャ</strong>:
-          本アプリは Apple Developer Program 有償登録なしで利用できるよう、GUI 本体（更新・置換対象）と常設 Worker CLI（固定パス永続化）を権限分離しています。
-          GUI をアップデート置換しても既存の登録ジョブや macOS TCC 権限は維持されます。
-          初回起動時の Gatekeeper 警告等については、<strong>セットアップガイド（docs/setup-guide.md）</strong> を参照してください。
+          ※ <strong>バックグラウンド通知抑制 & 権限分離アーキテクチャ</strong>:
+          ジョブ追加ごとの「バックグラウンド項目が追加されました」通知を防止するため、アプリ全体で1つの固定LaunchAgentが内部で複数ジョブを管理します（1 App = 1 LaunchAgent）。初回登録時のみmacOSから通知されますが、以後のジョブ作成・削除・リトライでは通知は出ません。
         </Paragraph>
       </div>
     </Modal>

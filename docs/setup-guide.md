@@ -45,6 +45,10 @@ GitHub Releases からダウンロードして利用を開始するまでの手�
   - この問題を根本から回避するため、Codex Scheduler では **「更新される GUI」と「常駐する Worker CLI」を分離** しています。
   - 初回起動時、同梱の `codex-scheduler-cli` がユーザーの固定パス（`~/.local/share/codex-scheduler/bin/codex-scheduler-cli`）へ自動インストール（プロビジョニング）されます。
   - macOS の `launchd`（LaunchAgent）にはこの固定 Worker パスが登録されるため、**GUI アプリ本体を新しい DMG で上書き更新しても、登録済みジョブや Worker に与えられたアクセス権限はリセットされず維持されます**。
+- **バックグラウンド通知の最小化（1 App = 1 LaunchAgent）**:
+  - macOS 13 (Ventura) 以降、新しい LaunchAgent が登録されるたびに「バックグラウンド項目が追加されました」と通知されます。
+  - Codex Scheduler では、ジョブを1件追加するたびに LaunchAgent を増設するのではなく、**アプリ専用の単一常設 LaunchAgent（`dev.codexscheduler.scheduler.plist`）が内部ですべてのジョブ（待機・リトライ・完了）を管理・定期実行（1分間隔）** します。
+  - このため、バックグラウンド項目の通知は**初回起動時の1回のみ**となり、以後のジョブ追加・編集・削除で通知が出ることはありません。
 - **スケジューラ登録権限**: ユーザー単位の LaunchAgent（`~/Library/LaunchAgents/`）を使用するため、管理者権限（sudo）は不要です。
 - **プロジェクトフォルダへのアクセス**: 初回に作業ディレクトリを参照する際、macOSから「フォルダへのアクセスを求めています」とダイアログが出た場合は「許可」を選択してください。
 

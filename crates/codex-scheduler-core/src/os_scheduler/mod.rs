@@ -15,6 +15,16 @@ pub enum SchedulerError {
 }
 
 pub trait SchedulerBackend: Send + Sync {
+    /// 常設スケジューラサービス（LaunchAgent等）が登録され最新であることを保証する
+    fn ensure_scheduler_installed(&self, cli_path: &Path) -> Result<(), SchedulerError>;
+
+    /// 常設スケジューラサービスが登録されているか確認する
+    fn is_scheduler_installed(&self) -> bool;
+
+    /// 常設スケジューラサービスを登録解除・アンインストールする
+    fn uninstall_scheduler(&self) -> Result<(), SchedulerError>;
+
+    /// ジョブごとの登録（互換用）
     fn register_job(&self, job: &Job, cli_path: &Path) -> Result<(), SchedulerError>;
     fn unregister_job(&self, job_id: &str) -> Result<(), SchedulerError>;
 }
@@ -33,8 +43,19 @@ pub fn get_platform_scheduler() -> Box<dyn SchedulerBackend> {
 pub struct FallbackScheduler;
 
 impl SchedulerBackend for FallbackScheduler {
+    fn ensure_scheduler_installed(&self, _cli_path: &Path) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
+    fn is_scheduler_installed(&self) -> bool {
+        true
+    }
+
+    fn uninstall_scheduler(&self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn register_job(&self, _job: &Job, _cli_path: &Path) -> Result<(), SchedulerError> {
-        // Fallback for non-macOS platforms or testing
         Ok(())
     }
 

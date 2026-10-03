@@ -183,6 +183,7 @@ export async function getSystemInfo(): Promise<SystemInfo> {
     codex_path: "/opt/homebrew/bin/codex",
     cli_worker_path: "~/.local/share/codex-scheduler/bin/codex-scheduler-cli",
     cli_worker_installed: true,
+    scheduler_installed: true,
     jobs_store_path: "~/.codex-scheduler/jobs.json",
   };
 }

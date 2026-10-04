@@ -70,7 +70,14 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
        - `target_exists`: bool（登録実行ファイルがファイルシステム上に実在するか。未実装プラットフォームでは false）
        - `owner_target_valid`: bool（登録実行ファイルが検出所有者の正当なバイナリであるか。未実装プラットフォームでは false）
      - `platform`: OS名文字列
-4. **自動化健全性判定規則**:
+4. **`show --json` スキーマ**:
+   - 基本スキーマは `Job` 構造体の完全な JSON 表現とする。
+   - ジョブステータスが `Running` の場合、以下の `active_execution` オブジェクトをトップレベルに付与しなければならない（MUST）：
+     - `is_runner_active`: bool（Runnerプロセスの排他ロックが保持されているか）
+     - `attempt_number`: u32（現在実行中の試行番号）
+     - `log_path`: string（ディスク上の試行ログファイル絶対パス）
+     - `latest_output`: string（ディスクログから抽出された直近の bounded tail 文字列）
+5. **自動化健全性判定規則**:
    - 自動化スクリプトまたは外部エージェントは、`installed == true && ready == true && target_exists == true && owner_target_valid == true` をもってスケジューラが正常稼働可能であると判定しなければならない（MUST）。
    - `owner == "desktop"` の場合、CLI からの呼出において `path_matched == false` となることは正常かつ期待される動作であり、これを異常（failure）と判定してはならない（MUST NOT）。
 

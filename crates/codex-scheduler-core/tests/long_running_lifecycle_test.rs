@@ -68,6 +68,15 @@ fn create_fake_codex_script(dir: &Path, behavior: &str) -> PathBuf {
                 s.push_str("exit /b 0\r\n");
                 s
             }
+            "early_quota_with_large_output" => {
+                let mut s = String::from("@echo off\r\n");
+                s.push_str("echo Error: You have hit your usage limit for this period.\r\n");
+                for i in 0..600 {
+                    s.push_str(&format!("echo Subsequent padding line {}: normal execution trace text 1234567890\r\n", i));
+                }
+                s.push_str("exit /b 1\r\n");
+                s
+            }
             "slow" => "@echo off\r\nping -n 2 127.0.0.1 >nul\r\nexit /b 0\r\n".to_string(),
             _ => "@echo off\r\nexit /b 0\r\n".to_string(),
         };
@@ -91,6 +100,15 @@ fn create_fake_codex_script(dir: &Path, behavior: &str) -> PathBuf {
                 s.push_str("exit 0\n");
                 s
             }
+            "early_quota_with_large_output" => {
+                let mut s = String::from("#!/bin/sh\n");
+                s.push_str("echo 'Error: You have hit your usage limit for this period.' >&2\n");
+                for i in 0..600 {
+                    s.push_str(&format!("echo 'Subsequent padding line {}: normal execution trace text 1234567890'\n", i));
+                }
+                s.push_str("exit 1\n");
+                s
+            }
             "slow" => "#!/bin/sh\nsleep 1\nexit 0\n".to_string(),
             _ => "#!/bin/sh\nexit 0\n".to_string(),
         };
@@ -100,6 +118,27 @@ fn create_fake_codex_script(dir: &Path, behavior: &str) -> PathBuf {
         std::fs::set_permissions(&path, perms).expect("set executable perms");
         path
     }
+}
+
+pub fn get_test_cli_runner_exe() -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target")
+        .join("debug")
+        .join("codex-scheduler");
+    #[cfg(windows)]
+    let path = path.with_extension("exe");
+    if !path.exists() {
+        let status = std::process::Command::new("cargo")
+            .args(["build", "-p", "codex-scheduler-cli"])
+            .status()
+            .expect("build codex-scheduler-cli");
+        assert!(status.success());
+    }
+    path
 }
 
 fn get_test_dummy_runner_exe() -> PathBuf {
@@ -392,3 +431,292 @@ async fn test_runner_lock_mutual_exclusion_and_cleanup() {
     drop(lock3);
     assert!(!runner::is_runner_active(job_id));
 }
+
+#[tokio::test]
+async fn test_early_quota_detected_even_if_trimmed_from_bounded_tail() {
+    let temp = tempdir().unwrap();
+    let fake_script = create_fake_codex_script(temp.path(), "early_quota_with_large_output");
+
+    let adapter = CodexAdapter::with_executable(fake_script);
+    let log_file = temp.path().join("streaming_quota.log");
+
+    let result = adapter
+        .execute_resume_streaming("sess-early-quota", temp.path(), "continue", Some(&log_file))
+        .await
+        .expect("execute streaming with early quota");
+
+    // Output status was exit 1 and quota was detected early
+    assert!(!result.success);
+    assert_eq!(result.exit_code, Some(1));
+    assert!(result.is_quota_error, "Incremental streaming must detect quota error even if pushed out of bounded tail");
+
+    // Bounded tail must NOT contain the early signature (proving it was trimmed)
+    assert!(
+        !result.stdout.contains("usage limit"),
+        "The early quota line should have been trimmed from the 10KB bounded tail"
+    );
+    assert!(result.stdout.contains("[...truncated...]"));
+
+    // Full disk log must contain both early quota and large output
+    let full_log = std::fs::read_to_string(&log_file).unwrap();
+    assert!(full_log.contains("You have hit your usage limit"));
+    assert!(full_log.contains("Subsequent padding line 599"));
+}
+
+#[tokio::test]
+async fn test_runner_crash_with_alive_child_maintains_running_and_blocks_duplicate_writer() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-orphan-child-alive";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now - Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Verify runner lock is NOT held (runner crashed)
+    assert!(!runner::is_runner_active(&job.id));
+
+    // Case 1: Codex child process is still alive on OS (we use current test process PID and start_time)
+    let current_pid = std::process::id();
+    let current_start = runner::get_process_start_time(current_pid).expect("get current process start time");
+    let alive_info = runner::RunnerInfo {
+        job_id: job.id.clone(),
+        session_id: session_id.to_string(),
+        runner_pid: 99999, // Dead runner
+        runner_started_at: now - Duration::minutes(10),
+        codex_pid: Some(current_pid),
+        codex_start_time: Some(current_start),
+    };
+    runner::write_runner_info(&alive_info).unwrap();
+
+    // Reconcile should NOT mark Failed or Retrying; child is still running!
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 0, "Job must NOT be recovered while Codex child process is still alive");
+
+    // Store state: job remains Running
+    let in_store = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(in_store.status, JobStatus::Running);
+
+    // Second job scheduled for same session MUST be deferred (duplicate writer blocked!)
+    let second_job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now - Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    store.insert_job(second_job.clone()).unwrap();
+
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert_eq!(claimed.len(), 0, "Second job must NOT be claimed while first job's child is alive");
+
+    // Case 2: Codex child process terminates (simulate by setting non-existent PID)
+    let dead_info = runner::RunnerInfo {
+        job_id: job.id.clone(),
+        session_id: session_id.to_string(),
+        runner_pid: 99999,
+        runner_started_at: now - Duration::minutes(10),
+        codex_pid: Some(999_999_999), // Non-existent PID
+        codex_start_time: Some("invalid_start_time".to_string()),
+    };
+    runner::write_runner_info(&dead_info).unwrap();
+
+    let recovered_now = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered_now.len(), 1, "Job must now be recovered once Codex child has terminated");
+    assert_eq!(recovered_now[0].status, JobStatus::Failed);
+
+    // Now second job can be safely claimed
+    let claimed_after = store.claim_due_jobs(now).unwrap();
+    assert_eq!(claimed_after.len(), 1);
+    assert_eq!(claimed_after[0].id, second_job.id);
+}
+
+#[tokio::test]
+async fn test_job_deletion_cleans_up_logs_and_runner_info() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let job = Job::new(
+        ProviderType::Codex,
+        "sess-delete-test".to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now,
+        None,
+    )
+    .unwrap();
+    store.insert_job(job.clone()).unwrap();
+
+    // Create a dummy log file
+    let log_path = runner::runner_log_path(&job.id, 1).unwrap();
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&log_path, "dummy log content").unwrap();
+    assert!(log_path.exists());
+
+    // Create a dummy runner info
+    let info = runner::RunnerInfo {
+        job_id: job.id.clone(),
+        session_id: job.session_id.clone(),
+        runner_pid: 1234,
+        runner_started_at: now,
+        codex_pid: None,
+        codex_start_time: None,
+    };
+    runner::write_runner_info(&info).unwrap();
+    let info_path = runner::runner_info_path(&job.id).unwrap();
+    assert!(info_path.exists());
+
+    // Delete job
+    let deleted = service.delete_job(&job.id).unwrap();
+    assert!(deleted);
+
+    // Both log directory and runner info must be cleaned up
+    assert!(!log_path.exists());
+    assert!(!info_path.exists());
+}
+
+#[tokio::test]
+async fn test_detached_runner_process_boundary_with_real_runner_contract() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+
+    let cli_exe = get_test_cli_runner_exe();
+    let service = SchedulerService::with_scheduler(
+        store.clone(),
+        Some(cli_exe),
+        Box::new(MockScheduler),
+    );
+
+    // Setup fake codex in PATH that creates a started file, sleeps briefly, and exits 0
+    let fake_bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&fake_bin_dir).unwrap();
+
+    let started_marker = temp.path().join("started.marker");
+    let stop_marker = temp.path().join("stop.marker");
+
+    #[cfg(windows)]
+    {
+        let fake_codex = fake_bin_dir.join("codex.cmd");
+        let script = format!(
+            "@echo off\r\necho started > \"{}\"\r\n:loop\r\nif exist \"{}\" goto done\r\nping -n 2 127.0.0.1 >nul\r\ngoto loop\r\n:done\r\necho fake codex finished\r\nexit /b 0\r\n",
+            started_marker.display(),
+            stop_marker.display()
+        );
+        std::fs::write(&fake_codex, script).unwrap();
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let fake_codex = fake_bin_dir.join("codex");
+        let script = format!(
+            "#!/bin/sh\necho started > \"{}\"\nwhile [ ! -f \"{}\" ]; do\n  sleep 0.2\ndone\necho 'fake codex finished'\nexit 0\n",
+            started_marker.display(),
+            stop_marker.display()
+        );
+        std::fs::write(&fake_codex, script).unwrap();
+        let mut perms = std::fs::metadata(&fake_codex).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_codex, perms).unwrap();
+    }
+
+    // Set PATH with fake_bin_dir prepended, and configure CODEX_SCHEDULER_STORE
+    let orig_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![fake_bin_dir];
+    paths.extend(std::env::split_paths(&orig_path));
+    let new_path = std::env::join_paths(paths).unwrap();
+    unsafe {
+        std::env::set_var("PATH", &new_path);
+        std::env::set_var("CODEX_SCHEDULER_STORE", &store_path);
+    }
+
+    let now = Utc::now();
+    let job = Job::new(
+        ProviderType::Codex,
+        "sess-real-boundary-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - Duration::minutes(2),
+        None,
+    )
+    .unwrap();
+    store.insert_job(job.clone()).unwrap();
+
+    // 1. Tick claims the job into Running and returns immediately without awaiting child
+    let tick_start = std::time::Instant::now();
+    let claimed = service.execute_tick().await.unwrap();
+    let tick_elapsed = tick_start.elapsed();
+
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, job.id);
+    assert_eq!(claimed[0].status, JobStatus::Running);
+    // Tick must complete quickly (under 500ms) while child keeps running
+    assert!(tick_elapsed < std::time::Duration::from_millis(1500), "Tick must return immediately");
+
+    // Wait until detached runner starts child (started.marker created)
+    let mut started = false;
+    for _ in 0..50 {
+        if started_marker.exists() {
+            started = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(started, "Detached runner must execute fake codex child");
+
+    // 2. While child is running:
+    // - Runner lock is held
+    assert!(runner::is_runner_active(&job.id));
+    // - Job in store is Running
+    assert_eq!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // 3. Second tick while child is running:
+    // - Reconcile does NOT mark Failed
+    // - Job remains Running
+    // - 0 due jobs claimed
+    let second_tick = service.execute_tick().await.unwrap();
+    assert_eq!(second_tick.len(), 0);
+    assert_eq!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // 4. Signal child to finish
+    std::fs::write(&stop_marker, "stop").unwrap();
+
+    // 5. Wait for runner process to complete and release lock
+    for _ in 0..50 {
+        if !runner::is_runner_active(&job.id) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(!runner::is_runner_active(&job.id), "Runner must finish after child finishes");
+
+    // 6. Job must now be terminal status (Succeeded) with execution history
+    let finished_job = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(finished_job.status, JobStatus::Succeeded);
+    assert_eq!(finished_job.execution_history.len(), 1);
+    assert_eq!(finished_job.execution_history[0].exit_code, Some(0));
+
+    // Restore PATH and CODEX_SCHEDULER_STORE
+    unsafe {
+        std::env::set_var("PATH", orig_path);
+        std::env::remove_var("CODEX_SCHEDULER_STORE");
+    }
+}
+

@@ -288,7 +288,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Show { job_id, json } => match service.store().get_job(&job_id) {
             Ok(Some(job)) => {
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&job)?);
+                    if job.status == codex_scheduler_core::models::JobStatus::Running {
+                        let mut value = serde_json::to_value(&job)?;
+                        let current_attempt = (job.execution_history.len() + 1) as u32;
+                        let log_path = codex_scheduler_core::runner::runner_log_path(&job.id, current_attempt).ok();
+                        let (path_str, latest_output) = if let Some(ref p) = log_path {
+                            let p_str = p.display().to_string();
+                            let output = if p.exists() {
+                                std::fs::read_to_string(p)
+                                    .map(|content| codex_scheduler_core::runner::bounded_log_tail(&content, 2048))
+                                    .unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+                            (Some(p_str), output)
+                        } else {
+                            (None, String::new())
+                        };
+
+                        let is_active = codex_scheduler_core::runner::is_runner_active(&job.id);
+                        let active_execution = serde_json::json!({
+                            "is_runner_active": is_active,
+                            "attempt_number": current_attempt,
+                            "log_path": path_str,
+                            "latest_output": latest_output,
+                        });
+
+                        if let Some(obj) = value.as_object_mut() {
+                            obj.insert("active_execution".to_string(), active_execution);
+                        }
+                        println!("{}", serde_json::to_string_pretty(&value)?);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&job)?);
+                    }
                 } else {
                     println!("Job Details:");
                     println!("  ID:           {}", job.id);

@@ -80,19 +80,21 @@ Domain: SCHED
 
 1. **Runner プロセス分離**:
    - ジョブの実行（Codex CLIの呼び出し、監視、ログ記録、結果確定）は、短時間のスケジューラtickプロセスとは分離された独立のRunnerプロセスによって行われなければならない（MUST）。
-2. **OSレベル排他ロックによるLiveness管理**:
+2. **OSレベル排他ロックと子プロセス実行メタデータの記録**:
    - Runnerプロセスは、ジョブ実行開始時にジョブ専用のロックファイル（`~/.codex-scheduler/runners/<job_id>.lock`）の排他ロック（exclusive file lock）を取得しなければならない（MUST）。
    - Runnerプロセスは、Codexの実行中、このファイルロックを解放せず保持し続けなければならない（MUST）。
-   - プロセスの正常終了、異常終了、シグナル停止、マシン再起動のいずれが発生した場合でも、OSカーネルによって当該ロックが自動解放されることを利用し、Liveness判定の唯一の厳密な根拠としなければならない（MUST）。PIDの存在確認のみに依存した判定を行ってはならない（MUST NOT）。
+   - Runnerプロセスは、Codex子プロセスの起動直後、ランナーメタデータ（`~/.codex-scheduler/runners/<job_id>.json`）に `runner_pid`、`codex_pid`、およびOSから取得した起動時刻（`codex_start_time`）を記録しなければならない（MUST）。
+   - Liveness判定は、Runnerプロセスが保持するファイルロックを第一根拠とし、ロックが失われた場合でもCodex子プロセスのOS生存確認（PIDおよび起動時刻の照合）を行わなければならない（MUST）。PID存在確認のみに依存した判定を行ってはならない（MUST NOT）。
 
 ### SCHED-JOB-007: クラッシュおよび孤立ジョブの自動回復（Orphan Recovery）
 
-1. **孤立Runningジョブの検知**:
+1. **孤立Runningジョブの検知とCodex子プロセス保護**:
    - スケジューラtick実行時、ストア上でステータスが `Running` であるジョブについて、対応するロックファイルの排他ロック取得を試行しなければならない（MUST）。
    - ロックが取得できない場合（`WouldBlock` 等）、Runnerプロセスは現在正常に生存・実行中であると判定し、ステータスを変更してはならない（MUST NOT）。
-   - ロックが取得できた場合、当該ジョブを実行していたRunnerプロセスは予期せず終了（クラッシュ、電源断等）した孤立（orphan）状態であると判定しなければならない（MUST）。
+   - ロックが取得できた場合（Runnerプロセスが失われた場合）、記録された `codex_pid` および `codex_start_time` に基づいてCodex子プロセスのOS上の生存を確認しなければならない（MUST）。
+   - **Codex子プロセスがOS上で生存している場合、ステータスを `Running` のまま維持し、回復処理を行ってはならない（MUST NOT）**。これにより同一セッションに対する二重writer起動を防止しなければならない（MUST）。
 2. **回復アクション**:
-   - 孤立ジョブを検知した場合、異常終了を示す `ExecutionAttempt`（`exit_code: None`, `error_message: "Runner process terminated unexpectedly (process crash or system restart)"`）を追加し、リトライポリシーに基づいて `Failed` または `Retrying` へ安全に遷移させなければならない（MUST）。これによりジョブが永久に `Running` に取り残されることを防止する。
+   - Codex子プロセスが終了している（またはマシン再起動等により存在しない）ことが確認された場合にのみ、異常終了試行（`exit_code: None`, `error_message: "Runner process terminated unexpectedly (process crash or system restart)"`）を追加し、リトライポリシーに基づいて `Failed` または `Retrying` へ安全に遷移させ、メタデータとロックファイルをクリーンアップしなければならない（MUST）。これによりジョブが永久に `Running` に取り残されることを防止する。
 
 ## 検証ルール
 

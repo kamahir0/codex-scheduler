@@ -257,13 +257,16 @@ impl SchedulerService {
 
     pub fn delete_job(&self, job_id: &str) -> Result<bool, CoreError> {
         let _ = self.scheduler.unregister_job(job_id);
+        let _ = runner::cleanup_job_logs(job_id);
+        runner::cleanup_runner_files(job_id);
         Ok(self.store.delete_job(job_id)?)
     }
 
     // RATIONALE: [SCHED-JOB-007] Automatic orphan job recovery during periodic scheduler tick
     // Scans jobs currently marked Running and checks whether an exclusive runner lock is held.
-    // If no runner process holds the lock, the process died abnormally (crash, power loss, or reboot).
-    // An aborted execution attempt is recorded and the job transitions safely to Failed or Retrying.
+    // If no runner lock is held, verifies whether the recorded Codex child process is still alive.
+    // If child process is still running on the OS, maintains Running to prevent concurrent duplicate writers.
+    // If child process has terminated or machine rebooted, records aborted attempt and recovers to Failed or Retrying.
     pub fn reconcile_running_jobs(&self) -> Result<Vec<Job>, CoreError> {
         Ok(self.store.with_lock(|| {
             let mut jobs = self.store.load_all()?;
@@ -271,6 +274,18 @@ impl SchedulerService {
 
             for job in jobs.iter_mut() {
                 if job.status == JobStatus::Running && !runner::is_runner_active(&job.id) {
+                    // Check if Codex child process is still alive despite lost runner lock
+                    if let Some(info) = runner::read_runner_info(&job.id) {
+                        if runner::is_codex_process_alive(&info) {
+                            // Codex child process is still actively running on OS!
+                            // Do NOT mark Failed or Retrying; maintain Running to guard against duplicate writers.
+                            continue;
+                        }
+                    }
+
+                    // Codex child process has terminated (or machine rebooted / never spawned)
+                    runner::cleanup_runner_files(&job.id);
+
                     let attempt_number = (job.execution_history.len() + 1) as u32;
                     let now = Utc::now();
                     let attempt = ExecutionAttempt {
@@ -406,7 +421,13 @@ impl SchedulerService {
         let log_path = runner::runner_log_path(&job.id, attempt_number).ok();
 
         let result = adapter
-            .execute_resume_streaming(&job.session_id, &job.cwd, &job.prompt, log_path.as_deref())
+            .execute_resume_streaming_with_job(
+                &job.session_id,
+                &job.cwd,
+                &job.prompt,
+                log_path.as_deref(),
+                Some(&job.id),
+            )
             .await;
 
         let finished_at = Utc::now();

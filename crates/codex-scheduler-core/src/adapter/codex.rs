@@ -62,6 +62,18 @@ impl CodexAdapter {
         prompt: &str,
         log_path: Option<&Path>,
     ) -> Result<ExecutionResult, AdapterError> {
+        self.execute_resume_streaming_with_job(session_id, cwd, prompt, log_path, None)
+            .await
+    }
+
+    pub async fn execute_resume_streaming_with_job(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        prompt: &str,
+        log_path: Option<&Path>,
+        job_id: Option<&str>,
+    ) -> Result<ExecutionResult, AdapterError> {
         let exe = self.resolve_executable()?;
 
         let mut cmd = Command::new(&exe);
@@ -80,6 +92,23 @@ impl CodexAdapter {
 
         let mut child = cmd.spawn().map_err(AdapterError::ProcessError)?;
 
+        // RATIONALE: [SCHED-JOB-006] Record child PID and OS start-time immediately after spawn
+        // Persists RunnerInfo so orphan recovery can distinguish surviving Codex child from total termination.
+        if let (Some(jid), Some(c_pid)) = (job_id, child.id()) {
+            let start_time = crate::runner::get_process_start_time(c_pid);
+            let info = crate::runner::RunnerInfo {
+                job_id: jid.to_string(),
+                session_id: session_id.to_string(),
+                runner_pid: std::process::id(),
+                runner_started_at: chrono::Utc::now(),
+                codex_pid: Some(c_pid),
+                codex_start_time: start_time,
+            };
+            let _ = crate::runner::write_runner_info(&info);
+        }
+
+        // RATIONALE: [CODEX-RESUME-009] Best-effort log file initialization with graceful fallback
+        // If the log directory or file cannot be opened, execution proceeds with bounded in-memory log.
         let log_file = if let Some(path) = log_path {
             if let Some(parent) = path.parent() {
                 let _ = tokio::fs::create_dir_all(parent).await;
@@ -98,21 +127,62 @@ impl CodexAdapter {
         let mut stdout_pipe = child.stdout.take().expect("stdout piped");
         let mut stderr_pipe = child.stderr.take().expect("stderr piped");
 
+        let quota_detected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let written_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
         let log_file_stdout = log_file.clone();
+        let quota_stdout = quota_detected.clone();
+        let written_stdout = written_bytes.clone();
         let stdout_handle = tokio::spawn(async move {
             let mut bounded = Vec::new();
             let mut buf = [0u8; 4096];
             let mut truncated = false;
+            let mut sliding_window = Vec::new();
             while let Ok(n) = stdout_pipe.read(&mut buf).await {
                 if n == 0 {
                     break;
                 }
                 let chunk = &buf[..n];
-                if let Some(ref file_mutex) = log_file_stdout {
-                    let mut file = file_mutex.lock().await;
-                    let _ = file.write_all(chunk).await;
-                    let _ = file.flush().await;
+
+                // Incremental quota detection across chunk boundary
+                sliding_window.extend_from_slice(chunk);
+                let window_str = String::from_utf8_lossy(&sliding_window).to_lowercase();
+                if window_str.contains("usage limit")
+                    || window_str.contains("rate limit")
+                    || window_str.contains("rate_limit_exceeded")
+                    || window_str.contains("quota exceeded")
+                    || window_str.contains("insufficient_quota")
+                    || window_str.contains("too many requests")
+                    || window_str.contains("status 429")
+                    || window_str.contains("http 429")
+                    || window_str.contains("429 too many")
+                    || window_str.contains("hit your usage limit")
+                    || window_str.contains("credit balance is too low")
+                    || window_str.contains("monthly limit")
+                {
+                    quota_stdout.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                if sliding_window.len() > 512 {
+                    let drain_len = sliding_window.len() - 256;
+                    sliding_window.drain(..drain_len);
+                }
+
+                // Capped disk log persistence
+                if let Some(ref file_mutex) = log_file_stdout {
+                    let current = written_stdout.load(std::sync::atomic::Ordering::Relaxed);
+                    if current < crate::runner::MAX_LOG_FILE_BYTES {
+                        let mut file = file_mutex.lock().await;
+                        let _ = file.write_all(chunk).await;
+                        let _ = file.flush().await;
+                        let new_total = written_stdout.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed) + chunk.len() as u64;
+                        if new_total >= crate::runner::MAX_LOG_FILE_BYTES {
+                            let cap_msg = b"\n[...log file reached max size 10MB, further output capped...]\n";
+                            let _ = file.write_all(cap_msg).await;
+                            let _ = file.flush().await;
+                        }
+                    }
+                }
+
                 bounded.extend_from_slice(chunk);
                 if bounded.len() > crate::runner::MAX_BOUNDED_LOG_BYTES * 2 {
                     let drain_len = bounded.len() - crate::runner::MAX_BOUNDED_LOG_BYTES;
@@ -124,20 +194,58 @@ impl CodexAdapter {
         });
 
         let log_file_stderr = log_file.clone();
+        let quota_stderr = quota_detected.clone();
+        let written_stderr = written_bytes.clone();
         let stderr_handle = tokio::spawn(async move {
             let mut bounded = Vec::new();
             let mut buf = [0u8; 4096];
             let mut truncated = false;
+            let mut sliding_window = Vec::new();
             while let Ok(n) = stderr_pipe.read(&mut buf).await {
                 if n == 0 {
                     break;
                 }
                 let chunk = &buf[..n];
-                if let Some(ref file_mutex) = log_file_stderr {
-                    let mut file = file_mutex.lock().await;
-                    let _ = file.write_all(chunk).await;
-                    let _ = file.flush().await;
+
+                // Incremental quota detection across chunk boundary
+                sliding_window.extend_from_slice(chunk);
+                let window_str = String::from_utf8_lossy(&sliding_window).to_lowercase();
+                if window_str.contains("usage limit")
+                    || window_str.contains("rate limit")
+                    || window_str.contains("rate_limit_exceeded")
+                    || window_str.contains("quota exceeded")
+                    || window_str.contains("insufficient_quota")
+                    || window_str.contains("too many requests")
+                    || window_str.contains("status 429")
+                    || window_str.contains("http 429")
+                    || window_str.contains("429 too many")
+                    || window_str.contains("hit your usage limit")
+                    || window_str.contains("credit balance is too low")
+                    || window_str.contains("monthly limit")
+                {
+                    quota_stderr.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                if sliding_window.len() > 512 {
+                    let drain_len = sliding_window.len() - 256;
+                    sliding_window.drain(..drain_len);
+                }
+
+                // Capped disk log persistence
+                if let Some(ref file_mutex) = log_file_stderr {
+                    let current = written_stderr.load(std::sync::atomic::Ordering::Relaxed);
+                    if current < crate::runner::MAX_LOG_FILE_BYTES {
+                        let mut file = file_mutex.lock().await;
+                        let _ = file.write_all(chunk).await;
+                        let _ = file.flush().await;
+                        let new_total = written_stderr.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed) + chunk.len() as u64;
+                        if new_total >= crate::runner::MAX_LOG_FILE_BYTES {
+                            let cap_msg = b"\n[...log file reached max size 10MB, further output capped...]\n";
+                            let _ = file.write_all(cap_msg).await;
+                            let _ = file.flush().await;
+                        }
+                    }
+                }
+
                 bounded.extend_from_slice(chunk);
                 if bounded.len() > crate::runner::MAX_BOUNDED_LOG_BYTES * 2 {
                     let drain_len = bounded.len() - crate::runner::MAX_BOUNDED_LOG_BYTES;
@@ -169,7 +277,10 @@ impl CodexAdapter {
         );
         let combined = format!("{}\n{}", stdout, stderr);
 
-        let is_quota = self.is_quota_error(&combined);
+        // RATIONALE: [CODEX-RESUME-009] Incremental streaming quota error detection
+        // Retains quota detection even if the initial signature was pushed out of the 10KB bounded tail.
+        let is_quota = quota_detected.load(std::sync::atomic::Ordering::Relaxed)
+            || self.is_quota_error(&combined);
         let success = output_status.success() && !is_quota;
         let exit_code = output_status.code();
 

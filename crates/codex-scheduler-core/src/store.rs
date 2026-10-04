@@ -33,6 +33,15 @@ impl JobStore {
     }
 
     pub fn default_store() -> Result<Self, StoreError> {
+        if let Some(custom) = std::env::var_os("CODEX_SCHEDULER_STORE") {
+            let path = PathBuf::from(custom);
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    fs::create_dir_all(parent)?;
+                }
+            }
+            return Ok(Self::new_with_path(path));
+        }
         let home = dirs::home_dir().ok_or(StoreError::HomeDirNotFound)?;
         let dir = home.join(".codex-scheduler");
         if !dir.exists() {

@@ -167,6 +167,10 @@ codex-scheduler list --json
 codex-scheduler show "<job-id>" --json
 ```
 
+- 実行中（`status == "running"`）のジョブでは、戻り値の JSON に `active_execution`（`is_runner_active`, `attempt_number`, `log_path`, `latest_output`）が含まれる。
+- 実行中の進捗確認は、`show --json` の `active_execution.latest_output` または `log_path` の read-only 読み取りによって行う。
+- **状況確認を目的として、同一 Codex セッションに対して追加の `codex resume` や `codex exec resume` を別プロセスとして起動してはならない（MUST NOT）**。
+
 期限前の `Scheduled`、quota retry 中の `Retrying` はそれぞれ通常状態になり得る。実行結果の Codex 側エラー（auth / session / quota / network / repository trust 等）と scheduler health failure を混同しない。
 
 ## Cancel / delete

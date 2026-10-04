@@ -6,6 +6,7 @@ use std::process::Stdio;
 use thiserror::Error;
 
 pub const MAX_BOUNDED_LOG_BYTES: usize = 10 * 1024; // 10 KB
+pub const MAX_LOG_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB per attempt
 
 #[derive(Debug, Error)]
 pub enum RunnerError {
@@ -17,6 +18,16 @@ pub enum RunnerError {
     HomeNotFound,
     #[error("Executable path not specified")]
     ExecutableNotFound,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RunnerInfo {
+    pub job_id: String,
+    pub session_id: String,
+    pub runner_pid: u32,
+    pub runner_started_at: chrono::DateTime<chrono::Utc>,
+    pub codex_pid: Option<u32>,
+    pub codex_start_time: Option<String>,
 }
 
 /// Returns the base directory for runner locks: `~/.codex-scheduler/runners`
@@ -35,6 +46,48 @@ pub fn runner_lock_path(job_id: &str) -> Result<PathBuf, RunnerError> {
     Ok(dir.join(format!("{}.lock", job_id)))
 }
 
+/// Returns the runner metadata info path for a given job: `~/.codex-scheduler/runners/<job_id>.json`
+pub fn runner_info_path(job_id: &str) -> Result<PathBuf, RunnerError> {
+    let dir = runner_lock_dir()?;
+    Ok(dir.join(format!("{}.json", job_id)))
+}
+
+pub fn write_runner_info(info: &RunnerInfo) -> Result<(), RunnerError> {
+    let path = runner_info_path(&info.job_id)?;
+    let content = serde_json::to_string_pretty(info)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fs::write(path, content)?;
+    Ok(())
+}
+
+pub fn read_runner_info(job_id: &str) -> Option<RunnerInfo> {
+    let path = runner_info_path(job_id).ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+pub fn cleanup_runner_files(job_id: &str) {
+    if let Ok(lock_path) = runner_lock_path(job_id) {
+        let _ = fs::remove_file(lock_path);
+    }
+    if let Ok(info_path) = runner_info_path(job_id) {
+        let _ = fs::remove_file(info_path);
+    }
+}
+
+/// Removes all log files and directory for a deleted job: `~/.codex-scheduler/logs/<job_id>`
+pub fn cleanup_job_logs(job_id: &str) -> Result<(), RunnerError> {
+    let home = dirs::home_dir().ok_or(RunnerError::HomeNotFound)?;
+    let dir = home.join(".codex-scheduler").join("logs").join(job_id);
+    if dir.exists() {
+        fs::remove_dir_all(dir)?;
+    }
+    Ok(())
+}
+
 /// Returns the base directory for job execution logs: `~/.codex-scheduler/logs/<job_id>`
 pub fn runner_log_dir(job_id: &str) -> Result<PathBuf, RunnerError> {
     let home = dirs::home_dir().ok_or(RunnerError::HomeNotFound)?;
@@ -51,6 +104,49 @@ pub fn runner_log_path(job_id: &str, attempt_number: u32) -> Result<PathBuf, Run
     Ok(dir.join(format!("attempt-{}.log", attempt_number)))
 }
 
+#[cfg(windows)]
+pub fn get_process_start_time(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::Foundation::FILETIME;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let res = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        let _ = CloseHandle(handle);
+        if res.is_ok() {
+            let time_u64 = ((creation.dwHighDateTime as u64) << 32) | (creation.dwLowDateTime as u64);
+            Some(time_u64.to_string())
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn get_process_start_time(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("lstart=")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !s.is_empty() {
+            Some(s)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 // RATIONALE: [SCHED-JOB-006] Lock-based liveness verification using kernel-managed file lock
 // Relying only on PID checks is prone to PID wrap-around errors or stale processes.
 // An OS-level exclusive file lock (flock / LockFileEx via fs2) is automatically released
@@ -59,6 +155,7 @@ pub fn runner_log_path(job_id: &str, attempt_number: u32) -> Result<PathBuf, Run
 pub struct RunnerLock {
     file: File,
     path: PathBuf,
+    job_id: String,
 }
 
 impl RunnerLock {
@@ -86,7 +183,7 @@ impl RunnerLock {
         let _ = writeln!(f_clone, "{}", meta);
         let _ = f_clone.flush();
 
-        Ok(Self { file, path })
+        Ok(Self { file, path, job_id: job_id.to_string() })
     }
 
     pub fn path(&self) -> &Path {
@@ -97,7 +194,24 @@ impl RunnerLock {
 impl Drop for RunnerLock {
     fn drop(&mut self) {
         let _ = self.file.unlock();
-        let _ = fs::remove_file(&self.path);
+        cleanup_runner_files(&self.job_id);
+    }
+}
+
+// RATIONALE: [SCHED-JOB-006] Verify child process execution liveness using PID and OS start-time
+// Prevents PID wrap-around errors and ensures second writer is never spawned while child process is alive.
+pub fn is_codex_process_alive(info: &RunnerInfo) -> bool {
+    let pid = match info.codex_pid {
+        Some(p) => p,
+        None => return false,
+    };
+    let expected_start = match info.codex_start_time.as_deref() {
+        Some(t) => t,
+        None => return false,
+    };
+    match get_process_start_time(pid) {
+        Some(actual_start) => actual_start == expected_start,
+        None => false,
     }
 }
 

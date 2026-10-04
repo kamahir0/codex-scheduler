@@ -39,4 +39,4 @@ Schedulerによってquota解除後などにCodex sessionを`continue`で再開�
 
 ## Status
 
-In progress.
+Complete.

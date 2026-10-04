@@ -1,12 +1,14 @@
 # Development State
 
-Stage: objective-complete
-Candidate: 28cba1b05bafdc6b4c5d9be26bed06abe673c480
-Work base: ad8905c597b8f5ca46752847551ee7e6a44a93af
+Stage: verification-ready
+Candidate: 95c21cb905b3c23145bbf4c005d0a5ad1e6d5790
+Work base: b4da6b87227359e37c6b5ad5043628d204d9312d
 
 ## Active work
 
-None.
+- Completed: Specification approval, runner process detachment, lock-based liveness, streaming logging, orphan recovery, deterministic lifecycle tests, and check-all verification
+- In progress: Remote CI verification and Candidate delivery
+- Remaining: GitHub Actions CI result confirmation and stage transition to objective-complete
 
 ## Blocking findings
 

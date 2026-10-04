@@ -171,6 +171,24 @@ async fn test_tick_due_and_future_jobs_filter() {
     assert_eq!(future_jobs[0].id, future_job.id);
 }
 
+fn get_test_dummy_runner_exe() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(comspec) = std::env::var_os("COMSPEC") {
+            let p = PathBuf::from(comspec);
+            if p.is_file() {
+                return p;
+            }
+        }
+        let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        PathBuf::from(sys_root).join("System32").join("cmd.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/bin/echo")
+    }
+}
+
 #[tokio::test]
 async fn test_execute_tick_shared_semantics_updates_history() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -178,7 +196,7 @@ async fn test_execute_tick_shared_semantics_updates_history() {
     let store = JobStore::new_with_path(store_path);
     let service = SchedulerService::with_scheduler(
         store.clone(),
-        Some(PathBuf::from("/bin/echo")),
+        Some(get_test_dummy_runner_exe()),
         Box::new(ReadyMockScheduler),
     );
 

@@ -102,16 +102,34 @@ fn create_fake_codex_script(dir: &Path, behavior: &str) -> PathBuf {
     }
 }
 
+fn get_test_dummy_runner_exe() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(comspec) = std::env::var_os("COMSPEC") {
+            let p = PathBuf::from(comspec);
+            if p.is_file() {
+                return p;
+            }
+        }
+        let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        PathBuf::from(sys_root).join("System32").join("cmd.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/bin/echo")
+    }
+}
+
 #[tokio::test]
 async fn test_tick_claims_job_into_running_and_returns_without_blocking() {
     let temp = tempdir().unwrap();
     let store_path = temp.path().join("jobs.json");
     let store = JobStore::new_with_path(&store_path);
 
-    // Dummy runner executable path (does not exist so tick falls back or completes immediately)
+    // Cross-platform dummy runner executable path (exists so tick detaches runner and returns immediately)
     let service = SchedulerService::with_scheduler(
         store.clone(),
-        Some(temp.path().join("nonexistent-runner")),
+        Some(get_test_dummy_runner_exe()),
         Box::new(MockScheduler),
     );
 
@@ -127,10 +145,14 @@ async fn test_tick_claims_job_into_running_and_returns_without_blocking() {
     .unwrap();
     store.insert_job(job.clone()).unwrap();
 
-    // 1. Tick should claim the job
+    // 1. Tick should claim the job into Running and return immediately
     let claimed = service.execute_tick().await.unwrap();
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].id, job.id);
+    assert_eq!(claimed[0].status, JobStatus::Running);
+
+    let in_store = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(in_store.status, JobStatus::Running);
 
     // 2. Second tick immediately should find 0 due jobs
     let second = service.execute_tick().await.unwrap();

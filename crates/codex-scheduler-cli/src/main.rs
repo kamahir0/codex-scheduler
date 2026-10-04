@@ -185,7 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Commands::RunJob { job_id } => {
             println!("[Worker] Starting execution for job: {}", job_id);
-            let job = service.execute_job(&job_id).await?;
+            let job = service.run_job_runner(&job_id).await?;
             println!(
                 "[Worker] Job execution finished. Final status: {:?}",
                 job.status
@@ -315,6 +315,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         if !att.stderr.trim().is_empty() {
                             println!("    Stderr:         {}", att.stderr.trim());
+                        }
+                    }
+
+                    if job.status == codex_scheduler_core::models::JobStatus::Running {
+                        let current_attempt = (job.execution_history.len() + 1) as u32;
+                        if let Ok(log_path) =
+                            codex_scheduler_core::runner::runner_log_path(&job.id, current_attempt)
+                        {
+                            if log_path.exists() {
+                                println!("\n  [Active Execution Log]");
+                                println!("    Path: {}", log_path.display());
+                                if let Ok(content) = std::fs::read_to_string(&log_path) {
+                                    let tail = codex_scheduler_core::runner::bounded_log_tail(
+                                        &content, 2048,
+                                    );
+                                    if !tail.trim().is_empty() {
+                                        println!("    Latest Output:\n{}", tail.trim());
+                                    }
+                                }
+                            }
                         }
                     }
                 }

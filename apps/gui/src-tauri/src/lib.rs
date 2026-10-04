@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum AppExecutionMode {
     Gui,
     HeadlessSchedulerTick,
+    HeadlessRunJob(String),
 }
 
 /// Pure function to route execution mode from CLI arguments.
@@ -19,9 +20,15 @@ where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    for arg in args {
-        if arg.as_ref() == "--scheduler-tick" {
+    let args_vec: Vec<String> = args.into_iter().map(|a| a.as_ref().to_string()).collect();
+    for i in 0..args_vec.len() {
+        if args_vec[i] == "--scheduler-tick" {
             return AppExecutionMode::HeadlessSchedulerTick;
+        }
+        if args_vec[i] == "--run-job" {
+            if let Some(job_id) = args_vec.get(i + 1) {
+                return AppExecutionMode::HeadlessRunJob(job_id.clone());
+            }
         }
     }
     AppExecutionMode::Gui
@@ -231,6 +238,52 @@ pub fn run_headless_tick() {
     });
 }
 
+/// Runs the headless job runner process for a claimed job.
+/// In this mode:
+/// - No Tauri GUI window is created
+/// - No Dock icon is displayed
+/// - Directly executes the claimed job via codex-scheduler-core runner semantics and exits cleanly
+pub fn run_headless_job_runner(job_id: &str) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("[Headless Runner] Failed to initialize runtime: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let job_id = job_id.to_string();
+    rt.block_on(async move {
+        let store = match JobStore::default_store() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[Headless Runner] Failed to open job store: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        let exe_path =
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-scheduler-gui"));
+        let service = SchedulerService::new(store, exe_path);
+
+        match service.run_job_runner(&job_id).await {
+            Ok(finished) => {
+                println!(
+                    "[Headless Runner] Finished job {}. Status: {:?}",
+                    finished.id, finished.status
+                );
+            }
+            Err(e) => {
+                eprintln!("[Headless Runner] Job execution error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    });
+}
+
 pub fn run() {
     let store = JobStore::default_store().expect("Failed to initialize job store");
     let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-scheduler-gui"));
@@ -295,6 +348,20 @@ mod tests {
                 "--scheduler-tick"
             ]),
             AppExecutionMode::HeadlessSchedulerTick
+        );
+
+        // Flag present -> HeadlessRunJob
+        assert_eq!(
+            parse_execution_mode(vec!["codex-scheduler-gui", "--run-job", "job-123"]),
+            AppExecutionMode::HeadlessRunJob("job-123".to_string())
+        );
+        assert_eq!(
+            parse_execution_mode(vec![
+                "/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui",
+                "--run-job",
+                "job-abc-456"
+            ]),
+            AppExecutionMode::HeadlessRunJob("job-abc-456".to_string())
         );
     }
 }

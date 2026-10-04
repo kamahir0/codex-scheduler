@@ -11,6 +11,9 @@ fn main() {
         codex_scheduler_gui_lib::AppExecutionMode::HeadlessSchedulerTick => {
             codex_scheduler_gui_lib::run_headless_tick();
         }
+        codex_scheduler_gui_lib::AppExecutionMode::HeadlessRunJob(job_id) => {
+            codex_scheduler_gui_lib::run_headless_job_runner(&job_id);
+        }
         codex_scheduler_gui_lib::AppExecutionMode::Gui => {
             codex_scheduler_gui_lib::run();
         }

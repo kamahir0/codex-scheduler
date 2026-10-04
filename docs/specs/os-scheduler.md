@@ -81,19 +81,21 @@ Windows環境において、バックグラウンド定期実行を担保する�
 ### OS-SCHED-003: ヘッドレスモード要件と共有コアセマンティクス
 
 1. **ヘッドレスモード要件（`--scheduler-tick`）**:
-   - LaunchAgent から起動された場合、以下の要件をすべて満たさなければならない（MUST）：
+   - LaunchAgent または Task Scheduler から起動された tick プロセスは、以下の要件をすべて満たさなければならない（MUST）：
      - Tauri GUI window を生成しない。
      - Dock へ通常 GUI として表示しない（LSUIElement / background process 相当）。
      - Webview / frontend を初期化しない。
      - ダイアログプラグイン等の GUI 依存機能を初期化しない。
      - GUI process を起動したような副作用を発生させない。
-     - 共有コアロジック（`codex-scheduler-core`）を用いて待機中ジョブのみを実行する。
-     - 実行対象のジョブが存在しない場合、数ミリ秒で直ちに正常終了（exit code 0）する。
-2. **多重実行防止（Atomic Claim）**:
+     - 共有コアロジック（`codex-scheduler-core`）を用いて待機中ジョブのみを抽出（claim）し、独立したRunnerプロセスを安全に起動（detached spawn）する。
+     - 長時間継続するCodexプロセスの完了をtick自身が同期的に待機（await）してはならず（MUST NOT）、Runner起動完了後、数ミリ秒〜数十ミリ秒以内に直ちに正常終了（exit code 0）する。
+     - 実行対象のジョブが存在しない場合も、数ミリ秒で直ちに正常終了（exit code 0）する。
+2. **多重実行防止（Atomic Claim）と同一Session排他**:
    - 60秒間隔の定期 tick が前回の完了前に重なった場合や、複数プロセスが同時に起動した場合でも、同一ジョブが二重実行されてはならない（MUST NOT）。
    - コアのジョブストアは、待機中ジョブ（`Scheduled` または `Retrying`）の抽出とステータスから `Running` への更新をアトミックに排他制御しなければならない（MUST）。
+   - 同一の `session_id` を持つ別のジョブが既に `Running` 状態である場合、後続の同一セッション向けジョブのclaimは先行ジョブの完了まで保留（スキップ）し、同一Codexセッションに対する二重writer競合を防止しなければならない（MUST）。
 3. **実行セマンティクスの共有**:
-   - ヘッドレスモードでのジョブ実行、リトライ判定、履歴保存は、GUI の「今すぐ実行」と完全に同一の `codex-scheduler-core` ロジックを使用しなければならない（MUST）。ロジックを GUI や CLI 側へ個別に複製してはならない（MUST NOT）。
+   - Desktop所有時（`codex-scheduler-gui --run-job <job_id>`）およびCLI所有時（`codex-scheduler run-job <job_id>`）のいずれにおいても、Runnerプロセスでのジョブ実行、リトライ判定、履歴保存は、完全に同一の `codex-scheduler-core` ロジックを使用しなければならない（MUST）。ロジックを GUI や CLI 側へ個別に複製してはならない（MUST NOT）。
 
 ### OS-SCHED-004: アプリ起動時の同期・フォールバック
 

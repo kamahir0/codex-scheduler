@@ -2,6 +2,7 @@ use super::{AdapterError, ExecutionResult, ProviderAdapter};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 pub struct CodexAdapter {
@@ -47,6 +48,20 @@ impl CodexAdapter {
         cwd: &Path,
         prompt: &str,
     ) -> Result<ExecutionResult, AdapterError> {
+        self.execute_resume_streaming(session_id, cwd, prompt, None)
+            .await
+    }
+
+    // RATIONALE: [CODEX-RESUME-009] Streaming output, safe log persistence, and bounded in-memory storage
+    // Prevents unbounded memory allocation and jobs.json bloat for hours-long execution runs while
+    // streaming full output to attempt log files on disk for read-only inspection.
+    pub async fn execute_resume_streaming(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        prompt: &str,
+        log_path: Option<&Path>,
+    ) -> Result<ExecutionResult, AdapterError> {
         let exe = self.resolve_executable()?;
 
         let mut cmd = Command::new(&exe);
@@ -63,15 +78,100 @@ impl CodexAdapter {
             cmd.env("PATH", new_path);
         }
 
-        let output = cmd.output().await.map_err(AdapterError::ProcessError)?;
+        let mut child = cmd.spawn().map_err(AdapterError::ProcessError)?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let log_file = if let Some(path) = log_path {
+            if let Some(parent) = path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .await
+                .ok()
+                .map(|f| std::sync::Arc::new(tokio::sync::Mutex::new(f)))
+        } else {
+            None
+        };
+
+        let mut stdout_pipe = child.stdout.take().expect("stdout piped");
+        let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+
+        let log_file_stdout = log_file.clone();
+        let stdout_handle = tokio::spawn(async move {
+            let mut bounded = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut truncated = false;
+            while let Ok(n) = stdout_pipe.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                let chunk = &buf[..n];
+                if let Some(ref file_mutex) = log_file_stdout {
+                    let mut file = file_mutex.lock().await;
+                    let _ = file.write_all(chunk).await;
+                    let _ = file.flush().await;
+                }
+                bounded.extend_from_slice(chunk);
+                if bounded.len() > crate::runner::MAX_BOUNDED_LOG_BYTES * 2 {
+                    let drain_len = bounded.len() - crate::runner::MAX_BOUNDED_LOG_BYTES;
+                    bounded.drain(..drain_len);
+                    truncated = true;
+                }
+            }
+            (bounded, truncated)
+        });
+
+        let log_file_stderr = log_file.clone();
+        let stderr_handle = tokio::spawn(async move {
+            let mut bounded = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut truncated = false;
+            while let Ok(n) = stderr_pipe.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                let chunk = &buf[..n];
+                if let Some(ref file_mutex) = log_file_stderr {
+                    let mut file = file_mutex.lock().await;
+                    let _ = file.write_all(chunk).await;
+                    let _ = file.flush().await;
+                }
+                bounded.extend_from_slice(chunk);
+                if bounded.len() > crate::runner::MAX_BOUNDED_LOG_BYTES * 2 {
+                    let drain_len = bounded.len() - crate::runner::MAX_BOUNDED_LOG_BYTES;
+                    bounded.drain(..drain_len);
+                    truncated = true;
+                }
+            }
+            (bounded, truncated)
+        });
+
+        let (stdout_res, stderr_res) = tokio::join!(stdout_handle, stderr_handle);
+        let (stdout_raw, stdout_truncated) = stdout_res.unwrap_or_default();
+        let (stderr_raw, stderr_truncated) = stderr_res.unwrap_or_default();
+
+        let output_status = child.wait().await.map_err(AdapterError::ProcessError)?;
+
+        let stdout_str = String::from_utf8_lossy(&stdout_raw);
+        let stderr_str = String::from_utf8_lossy(&stderr_raw);
+
+        let stdout = crate::runner::bounded_log_tail_with_flag(
+            &stdout_str,
+            crate::runner::MAX_BOUNDED_LOG_BYTES,
+            stdout_truncated,
+        );
+        let stderr = crate::runner::bounded_log_tail_with_flag(
+            &stderr_str,
+            crate::runner::MAX_BOUNDED_LOG_BYTES,
+            stderr_truncated,
+        );
         let combined = format!("{}\n{}", stdout, stderr);
 
         let is_quota = self.is_quota_error(&combined);
-        let success = output.status.success() && !is_quota;
-        let exit_code = output.status.code();
+        let success = output_status.success() && !is_quota;
+        let exit_code = output_status.code();
 
         let error_message = if !success {
             if is_quota {

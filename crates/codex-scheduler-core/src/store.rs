@@ -166,12 +166,26 @@ impl JobStore {
             let mut jobs = self.load_all()?;
             let mut claimed = Vec::new();
 
+            // RATIONALE: [OS-SCHED-003] Prevent concurrent duplicate writers to the same Codex session
+            // Track active session IDs already running in store or newly claimed in this tick.
+            let mut active_sessions: std::collections::HashSet<String> = jobs
+                .iter()
+                .filter(|j| j.status == crate::models::JobStatus::Running)
+                .map(|j| j.session_id.clone())
+                .collect();
+
             for job in jobs.iter_mut() {
                 let is_due_status = matches!(
                     job.status,
                     crate::models::JobStatus::Scheduled | crate::models::JobStatus::Retrying
                 );
                 if is_due_status && job.scheduled_at <= now {
+                    // If another job with the same session_id is already running, defer this job to next tick
+                    if active_sessions.contains(&job.session_id) {
+                        continue;
+                    }
+
+                    active_sessions.insert(job.session_id.clone());
                     job.set_status(crate::models::JobStatus::Running);
                     claimed.push(job.clone());
                 }

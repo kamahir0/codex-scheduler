@@ -35,7 +35,7 @@ Domain: SCHED
 ジョブの状態（`status`）は以下のいずれかでなければならず（MUST）、定義された遷移規則に従わなければならない。
 
 - `scheduled`: 実行待ち状態。OSスケジューラに登録済み。
-- `running`: workerによって現在実行中。
+- `running`: worker/runnerによって現在実行中。
 - `retrying`: 実行が一時失敗（Quota超過等）し、次回リトライ待ち。
 - `succeeded`: プロンプト送信・実行が正常完了。
 - `failed`: 最大リトライ回数超過、または致命的エラーにより失敗。
@@ -45,8 +45,8 @@ Domain: SCHED
 - `scheduled` -> `running`
 - `scheduled` -> `cancelled`
 - `running` -> `succeeded`
-- `running` -> `retrying` (リトライ条件を満たす場合)
-- `running` -> `failed` (リトライ不可、または上限到達)
+- `running` -> `retrying` (リトライ条件を満たす場合、または回復可能な孤立検知時)
+- `running` -> `failed` (リトライ不可、上限到達、または回復不能な孤立検知時)
 - `retrying` -> `running` (次回試行開始時)
 - `retrying` -> `cancelled`
 
@@ -64,15 +64,35 @@ Domain: SCHED
 - `started_at`: 実行開始日時。
 - `finished_at`: 実行終了日時。
 - `exit_code`: コマンド終了コード（プロセス異常終了時は null）。
-- `stdout`: 標準出力（最大長制限あり）。
-- `stderr`: 標準エラー出力。
+- `stdout`: 標準出力（メモリおよび`jobs.json`の肥大化を防ぐため、最新の末尾 bounded size [最大10KB] を記録）。
+- `stderr`: 標準エラー出力（最新の末尾 bounded size [最大10KB] を記録）。
 - `is_quota_error`: Quota枯渇エラーと判定されたかどうかの真偽値。
 - `error_message`: 失敗時の要約メッセージ。
+
+完全なストリーミング実行ログは、ディスク上のログファイル（`~/.codex-scheduler/logs/<job_id>/attempt-<attempt_number>.log`）に保存されなければならない（MUST）。
 
 ### SCHED-JOB-005: ジョブのキャンセルと削除
 
 1. ユーザーが `scheduled` または `retrying` のジョブをキャンセルした場合、ステータスを `cancelled` に更新し、OSスケジューラから該当タスクを登録解除しなければならない（MUST）。
 2. ジョブが削除された場合、ストアから除去するとともに、OSスケジューラから該当タスクを確実に登録解除しなければならない（MUST）。
+
+### SCHED-JOB-006: 長時間ジョブ実行ランナーと生存性（Liveness）保証
+
+1. **Runner プロセス分離**:
+   - ジョブの実行（Codex CLIの呼び出し、監視、ログ記録、結果確定）は、短時間のスケジューラtickプロセスとは分離された独立のRunnerプロセスによって行われなければならない（MUST）。
+2. **OSレベル排他ロックによるLiveness管理**:
+   - Runnerプロセスは、ジョブ実行開始時にジョブ専用のロックファイル（`~/.codex-scheduler/runners/<job_id>.lock`）の排他ロック（exclusive file lock）を取得しなければならない（MUST）。
+   - Runnerプロセスは、Codexの実行中、このファイルロックを解放せず保持し続けなければならない（MUST）。
+   - プロセスの正常終了、異常終了、シグナル停止、マシン再起動のいずれが発生した場合でも、OSカーネルによって当該ロックが自動解放されることを利用し、Liveness判定の唯一の厳密な根拠としなければならない（MUST）。PIDの存在確認のみに依存した判定を行ってはならない（MUST NOT）。
+
+### SCHED-JOB-007: クラッシュおよび孤立ジョブの自動回復（Orphan Recovery）
+
+1. **孤立Runningジョブの検知**:
+   - スケジューラtick実行時、ストア上でステータスが `Running` であるジョブについて、対応するロックファイルの排他ロック取得を試行しなければならない（MUST）。
+   - ロックが取得できない場合（`WouldBlock` 等）、Runnerプロセスは現在正常に生存・実行中であると判定し、ステータスを変更してはならない（MUST NOT）。
+   - ロックが取得できた場合、当該ジョブを実行していたRunnerプロセスは予期せず終了（クラッシュ、電源断等）した孤立（orphan）状態であると判定しなければならない（MUST）。
+2. **回復アクション**:
+   - 孤立ジョブを検知した場合、異常終了を示す `ExecutionAttempt`（`exit_code: None`, `error_message: "Runner process terminated unexpectedly (process crash or system restart)"`）を追加し、リトライポリシーに基づいて `Failed` または `Retrying` へ安全に遷移させなければならない（MUST）。これによりジョブが永久に `Running` に取り残されることを防止する。
 
 ## 検証ルール
 

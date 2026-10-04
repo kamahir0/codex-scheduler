@@ -209,9 +209,19 @@ async fn test_execute_tick_shared_semantics_updates_history() {
         .unwrap();
 
     // Run execute_tick directly without Tauri/GUI initialization
-    let finished_jobs = service.execute_tick().await.unwrap();
-    assert_eq!(finished_jobs.len(), 1);
-    assert_eq!(finished_jobs[0].id, job.id);
+    // Under decoupled runner semantics (OS-SCHED-003, SCHED-JOB-006), tick claims the due job into Running.
+    let claimed_jobs = service.execute_tick().await.unwrap();
+    assert_eq!(claimed_jobs.len(), 1);
+    assert_eq!(claimed_jobs[0].id, job.id);
+    assert_eq!(claimed_jobs[0].status, JobStatus::Running);
+
+    // Job in store is now Running (execution handed off to runner)
+    let in_store = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(in_store.status, JobStatus::Running);
+
+    // Runner executes the claimed job, updating execution history
+    let finished = service.run_job_runner(&job.id).await.unwrap();
+    assert_eq!(finished.execution_history.len(), 1);
 
     // Job in store should now have execution attempt history
     let updated_job = store.get_job(&job.id).unwrap().unwrap();

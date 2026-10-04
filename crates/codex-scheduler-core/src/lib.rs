@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod models;
 pub mod os_scheduler;
 pub mod retry;
+pub mod runner;
 pub mod store;
 pub mod worker;
 
@@ -25,6 +26,8 @@ pub enum CoreError {
     Scheduler(#[from] os_scheduler::SchedulerError),
     #[error("Adapter error: {0}")]
     Adapter(#[from] adapter::AdapterError),
+    #[error("Runner error: {0}")]
+    Runner(#[from] runner::RunnerError),
     #[error("Job not found: {0}")]
     JobNotFound(String),
 }
@@ -257,9 +260,102 @@ impl SchedulerService {
         Ok(self.store.delete_job(job_id)?)
     }
 
-    /// Periodic tick execution: atomically claims due jobs and executes them.
-    /// Shared between headless GUI `--scheduler-tick` and CLI `tick`.
+    // RATIONALE: [SCHED-JOB-007] Automatic orphan job recovery during periodic scheduler tick
+    // Scans jobs currently marked Running and checks whether an exclusive runner lock is held.
+    // If no runner process holds the lock, the process died abnormally (crash, power loss, or reboot).
+    // An aborted execution attempt is recorded and the job transitions safely to Failed or Retrying.
+    pub fn reconcile_running_jobs(&self) -> Result<Vec<Job>, CoreError> {
+        Ok(self.store.with_lock(|| {
+            let mut jobs = self.store.load_all()?;
+            let mut recovered = Vec::new();
+
+            for job in jobs.iter_mut() {
+                if job.status == JobStatus::Running && !runner::is_runner_active(&job.id) {
+                    let attempt_number = (job.execution_history.len() + 1) as u32;
+                    let now = Utc::now();
+                    let attempt = ExecutionAttempt {
+                        attempt_number,
+                        started_at: job.updated_at,
+                        finished_at: now,
+                        exit_code: None,
+                        stdout: String::new(),
+                        stderr: "Runner process terminated unexpectedly (process crash or system restart)".to_string(),
+                        is_quota_error: false,
+                        error_message: Some("Runner process terminated unexpectedly (process crash or system restart)".to_string()),
+                    };
+                    job.add_attempt(attempt);
+
+                    let fake_res = ExecutionResult {
+                        exit_code: None,
+                        stdout: String::new(),
+                        stderr: "Runner process terminated unexpectedly".to_string(),
+                        is_quota_error: false,
+                        success: false,
+                        error_message: Some("Runner process terminated unexpectedly".to_string()),
+                    };
+                    let action = RetryEngine::apply_evaluation(job, &fake_res);
+                    match action {
+                        NextAction::CompleteSuccess => {}
+                        NextAction::CompleteFailure(_) => {}
+                        NextAction::RetryAfter(next_time) => {
+                            job.scheduled_at = next_time;
+                        }
+                    }
+                    recovered.push(job.clone());
+                }
+            }
+
+            if !recovered.is_empty() {
+                self.store.save_all(&jobs)?;
+            }
+
+            Ok(recovered)
+        })?)
+    }
+
+    // RATIONALE: [OS-SCHED-003] Decouple scheduler tick from long-running execution
+    // Claims due jobs atomically, spawns detached runner processes, and completes in milliseconds
+    // so persistent OS scheduler ticks (launchd / Task Scheduler) are never occupied or starved.
     pub async fn execute_tick(&self) -> Result<Vec<Job>, CoreError> {
+        // Step 1: Reconcile any orphan Running jobs from previous ticks/crashes
+        let _ = self.reconcile_running_jobs();
+
+        // Step 2: Claim due jobs (Scheduled / Retrying) atomically
+        let now = Utc::now();
+        let due_jobs = self.store.claim_due_jobs(now)?;
+
+        let mut spawned = Vec::new();
+        if let Some(ref exe) = self.exe_path {
+            if exe.is_file() {
+                for job in due_jobs {
+                    match runner::spawn_detached_runner(exe, &job.id, self.is_desktop) {
+                        Ok(()) => spawned.push(job),
+                        Err(e) => {
+                            eprintln!("[Tick] Failed to spawn runner for job {}: {}", job.id, e);
+                            let mut failed_job = job;
+                            failed_job.set_status(JobStatus::Failed);
+                            let _ = self.store.update_job(&failed_job);
+                        }
+                    }
+                }
+                return Ok(spawned);
+            }
+        }
+
+        // Fallback for tests when no real executable is configured: execute in-process
+        for job in due_jobs {
+            match self.execute_claimed_job(job).await {
+                Ok(finished) => spawned.push(finished),
+                Err(e) => eprintln!("[Tick] Error executing job: {}", e),
+            }
+        }
+
+        Ok(spawned)
+    }
+
+    /// In-process tick execution for deterministic integration tests.
+    pub async fn execute_tick_in_process(&self) -> Result<Vec<Job>, CoreError> {
+        let _ = self.reconcile_running_jobs();
         let now = Utc::now();
         let due_jobs = self.store.claim_due_jobs(now)?;
         let mut results = Vec::new();
@@ -274,10 +370,31 @@ impl SchedulerService {
         Ok(results)
     }
 
+    // RATIONALE: [SCHED-JOB-006] Independent runner execution with lock-based liveness and streaming logs
+    // Executed by the detached runner process. Acquires exclusive OS lock, executes Codex with streaming logs,
+    // updates store, and safely exits. Handles both pre-claimed tick jobs and manual runner invocations.
+    pub async fn run_job_runner(&self, job_id: &str) -> Result<Job, CoreError> {
+        let _lock = runner::RunnerLock::acquire(job_id)?;
+
+        let mut job = self
+            .store
+            .get_job(job_id)?
+            .ok_or_else(|| CoreError::JobNotFound(job_id.to_string()))?;
+
+        // If not already claimed to Running (e.g. manual invocation), claim it now
+        if job.status != JobStatus::Running {
+            job = self.store.claim_job_for_execution(job_id)?;
+        }
+
+        self.execute_claimed_job(job).await
+    }
+
     /// Single job manual or specific execution.
-    /// Atomically claims the job to prevent duplicate concurrent execution.
+    /// Atomically claims the job to prevent duplicate concurrent execution,
+    /// acquires runner lock, and executes synchronously.
     pub async fn execute_job(&self, job_id: &str) -> Result<Job, CoreError> {
         let job = self.store.claim_job_for_execution(job_id)?;
+        let _lock = runner::RunnerLock::acquire(job_id)?;
         self.execute_claimed_job(job).await
     }
 
@@ -286,9 +403,10 @@ impl SchedulerService {
         let adapter = CodexAdapter::new();
         let attempt_number = (job.execution_history.len() + 1) as u32;
         let started_at = Utc::now();
+        let log_path = runner::runner_log_path(&job.id, attempt_number).ok();
 
         let result = adapter
-            .execute_resume(&job.session_id, &job.cwd, &job.prompt)
+            .execute_resume_streaming(&job.session_id, &job.cwd, &job.prompt, log_path.as_deref())
             .await;
 
         let finished_at = Utc::now();

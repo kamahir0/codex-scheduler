@@ -1,4 +1,7 @@
 use std::process::Command;
+use chrono::Utc;
+use codex_scheduler_core::models::{Job, JobStatus, ProviderType};
+use codex_scheduler_core::store::JobStore;
 
 #[test]
 fn test_cli_help() {
@@ -144,9 +147,52 @@ fn test_cli_show_json_running_active_observability() {
     let active = &val["active_execution"];
     assert_eq!(active["attempt_number"], 1);
     assert_eq!(active["is_runner_active"], false); // Lock is not held in this mock test
+    assert_eq!(active["codex_process_alive"], false);
+    assert_eq!(active["liveness_state"], "unknown");
     assert!(active["log_path"].as_str().unwrap().contains(&job.id));
     assert!(active["latest_output"].as_str().unwrap().contains("Processing step 1"));
 
     // Cleanup log
     let _ = runner::cleanup_job_logs(&job.id);
+}
+
+#[test]
+fn test_cli_cancel_and_delete_running_job_rejected_json() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let store_path = temp_dir.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+
+    let mut job = Job::new(
+        ProviderType::Codex,
+        "session-running-cancel".to_string(),
+        temp_dir.path().to_path_buf(),
+        None,
+        Utc::now(),
+        None,
+    )
+    .expect("create job");
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).expect("insert job");
+
+    let bin_path = env!("CARGO_BIN_EXE_codex-scheduler");
+
+    // 1. Cancel on Running job must fail with cannot_cancel_running_job
+    let cancel_out = Command::new(bin_path)
+        .env("CODEX_SCHEDULER_STORE", &store_path)
+        .args(["cancel", &job.id, "--json"])
+        .output()
+        .expect("run cancel");
+    assert!(!cancel_out.status.success());
+    let err_val: serde_json::Value = serde_json::from_slice(&cancel_out.stderr).expect("parse cancel error json");
+    assert_eq!(err_val["error"]["code"], "cannot_cancel_running_job");
+
+    // 2. Delete on Running job must fail with cannot_delete_running_job
+    let delete_out = Command::new(bin_path)
+        .env("CODEX_SCHEDULER_STORE", &store_path)
+        .args(["delete", &job.id, "--json"])
+        .output()
+        .expect("run delete");
+    assert!(!delete_out.status.success());
+    let del_err_val: serde_json::Value = serde_json::from_slice(&delete_out.stderr).expect("parse delete error json");
+    assert_eq!(del_err_val["error"]["code"], "cannot_delete_running_job");
 }

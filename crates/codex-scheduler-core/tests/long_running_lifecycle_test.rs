@@ -306,6 +306,7 @@ async fn test_orphan_recovery_on_crashed_runner() {
     .unwrap();
     // Simulate job was claimed to Running by a previous tick, but runner process died without updating store
     orphan_job.set_status(JobStatus::Running);
+    orphan_job.updated_at = now - Duration::minutes(5);
     store.insert_job(orphan_job.clone()).unwrap();
 
     // Verify lock is NOT held (is_runner_active == false)
@@ -488,7 +489,9 @@ async fn test_runner_crash_with_alive_child_maintains_running_and_blocks_duplica
 
     // Case 1: Codex child process is still alive on OS (we use current test process PID and start_time)
     let current_pid = std::process::id();
-    let current_start = runner::get_process_start_time(current_pid).expect("get current process start time");
+    let current_start = runner::get_process_start_time(current_pid)
+        .expect("get current process start time")
+        .expect("current process start time exists");
     let alive_info = runner::RunnerInfo {
         job_id: job.id.clone(),
         session_id: session_id.to_string(),
@@ -550,7 +553,7 @@ async fn test_job_deletion_cleans_up_logs_and_runner_info() {
     let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
 
     let now = Utc::now();
-    let job = Job::new(
+    let mut job = Job::new(
         ProviderType::Codex,
         "sess-delete-test".to_string(),
         temp.path().to_path_buf(),
@@ -559,6 +562,7 @@ async fn test_job_deletion_cleans_up_logs_and_runner_info() {
         None,
     )
     .unwrap();
+    job.set_status(JobStatus::Running);
     store.insert_job(job.clone()).unwrap();
 
     // Create a dummy log file
@@ -569,26 +573,20 @@ async fn test_job_deletion_cleans_up_logs_and_runner_info() {
     std::fs::write(&log_path, "dummy log content").unwrap();
     assert!(log_path.exists());
 
-    // Create a dummy runner info
-    let info = runner::RunnerInfo {
-        job_id: job.id.clone(),
-        session_id: job.session_id.clone(),
-        runner_pid: 1234,
-        runner_started_at: now,
-        codex_pid: None,
-        codex_start_time: None,
-    };
-    runner::write_runner_info(&info).unwrap();
-    let info_path = runner::runner_info_path(&job.id).unwrap();
-    assert!(info_path.exists());
+    // 1. While job is Running, deletion must be rejected
+    let del_res = service.delete_job(&job.id);
+    assert!(del_res.is_err(), "Deleting running job must fail");
+    assert!(log_path.exists(), "Logs must not be deleted when deletion fails");
 
-    // Delete job
+    // 2. Mark job as Succeeded (terminal state), now deletion succeeds and cleans up logs
+    job.set_status(JobStatus::Succeeded);
+    store.update_job(&job).unwrap();
+
     let deleted = service.delete_job(&job.id).unwrap();
     assert!(deleted);
 
-    // Both log directory and runner info must be cleaned up
+    // Log directory must now be cleaned up
     assert!(!log_path.exists());
-    assert!(!info_path.exists());
 }
 
 #[tokio::test]
@@ -718,5 +716,255 @@ async fn test_detached_runner_process_boundary_with_real_runner_contract() {
         std::env::set_var("PATH", orig_path);
         std::env::remove_var("CODEX_SCHEDULER_STORE");
     }
+}
+
+#[tokio::test]
+async fn test_running_job_cancel_and_delete_rejected_to_protect_session_writer() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-cancel-delete-guard";
+    let mut job_a = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now - Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    job_a.set_status(JobStatus::Running);
+    store.insert_job(job_a.clone()).unwrap();
+
+    // 1. Cancelling running job must be rejected
+    let cancel_res = service.cancel_job(&job_a.id);
+    assert!(cancel_res.is_err(), "Cancelling running job must fail");
+    assert_eq!(store.get_job(&job_a.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // 2. Deleting running job must be rejected
+    let delete_res = service.delete_job(&job_a.id);
+    assert!(delete_res.is_err(), "Deleting running job must fail");
+    assert!(store.get_job(&job_a.id).unwrap().is_some());
+
+    // 3. Second job for same session must NOT be claimed while first job is Running
+    let job_b = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now - Duration::minutes(2),
+        None,
+    )
+    .unwrap();
+    store.insert_job(job_b.clone()).unwrap();
+
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert_eq!(claimed.len(), 0, "Second job must NOT be claimed while first job is Running");
+
+    // 4. Scheduled job cancel must succeed
+    let job_c = Job::new(
+        ProviderType::Codex,
+        "sess-scheduled-cancel".to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now + Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    store.insert_job(job_c.clone()).unwrap();
+    let cancel_c = service.cancel_job(&job_c.id).unwrap();
+    assert_eq!(cancel_c.status, JobStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn test_manual_execution_enforces_same_session_single_writer() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-manual-exclusion";
+    let mut job_a = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now - Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    job_a.set_status(JobStatus::Running);
+    store.insert_job(job_a.clone()).unwrap();
+
+    // 1. Manual execute_job for another job with the SAME session must fail with SessionBusy
+    let job_b = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now,
+        None,
+    )
+    .unwrap();
+    store.insert_job(job_b.clone()).unwrap();
+
+    let exec_b_res = service.execute_job(&job_b.id).await;
+    assert!(exec_b_res.is_err(), "Manual execution of conflicting session must fail");
+
+    // 2. Manual execute_job for a DIFFERENT session must succeed (in claim)
+    let job_c = Job::new(
+        ProviderType::Codex,
+        "sess-different".to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now,
+        None,
+    )
+    .unwrap();
+    store.insert_job(job_c.clone()).unwrap();
+    let claimed_c = store.claim_job_for_execution(&job_c.id).unwrap();
+    assert_eq!(claimed_c.status, JobStatus::Running);
+
+    // 3. Orphan runner with alive child process: run_job_runner on same job must be rejected
+    let current_pid = std::process::id();
+    let current_start = runner::get_process_start_time(current_pid).unwrap().unwrap();
+    let alive_info = runner::RunnerInfo {
+        job_id: job_a.id.clone(),
+        session_id: session_id.to_string(),
+        runner_pid: 99999, // Dead runner
+        runner_started_at: now - Duration::minutes(10),
+        codex_pid: Some(current_pid),
+        codex_start_time: Some(current_start),
+    };
+    runner::write_runner_info(&alive_info).unwrap();
+
+    let runner_res = service.run_job_runner(&job_a.id).await;
+    assert!(runner_res.is_err(), "run_job_runner must reject starting second writer when child is still alive");
+}
+
+#[tokio::test]
+async fn test_claim_to_lock_handoff_grace_period_prevents_premature_orphan_recovery() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let mut fresh_job = Job::new(
+        ProviderType::Codex,
+        "sess-handoff-race".to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now,
+        None,
+    )
+    .unwrap();
+    // Simulate job freshly claimed into Running 1 second ago (runner process still spawning)
+    fresh_job.set_status(JobStatus::Running);
+    fresh_job.updated_at = now - chrono::Duration::seconds(1);
+    store.insert_job(fresh_job.clone()).unwrap();
+
+    // Reconcile must NOT recover this job during the 15-second grace period
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 0, "Freshly claimed job must not be recovered during handoff grace period");
+    assert_eq!(store.get_job(&fresh_job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // Once 20 seconds have passed without runner lock or info, it is a genuine orphan crash and must recover
+    fresh_job.updated_at = now - chrono::Duration::seconds(20);
+    store.update_job(&fresh_job).unwrap();
+
+    let recovered_after = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered_after.len(), 1, "Orphan job exceeding grace period must be recovered");
+    assert_eq!(recovered_after[0].status, JobStatus::Failed);
+}
+
+#[tokio::test]
+async fn test_unknown_liveness_observation_fails_closed() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-unknown-liveness";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now - Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    job.updated_at = now - Duration::minutes(5);
+    store.insert_job(job.clone()).unwrap();
+
+    // Write runner info where child start time is None (observation incomplete / Unknown)
+    let unknown_info = runner::RunnerInfo {
+        job_id: job.id.clone(),
+        session_id: session_id.to_string(),
+        runner_pid: 99999,
+        runner_started_at: now - Duration::minutes(5),
+        codex_pid: Some(12345),
+        codex_start_time: None, // Unknown start time
+    };
+    runner::write_runner_info(&unknown_info).unwrap();
+
+    // Reconcile must fail-closed: do NOT recover, maintain Running
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 0, "Unknown liveness must fail-closed and not recover job");
+    assert_eq!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // Same session job must continue to be blocked
+    let second_job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        None,
+        now,
+        None,
+    )
+    .unwrap();
+    store.insert_job(second_job.clone()).unwrap();
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert_eq!(claimed.len(), 0, "Second job must remain blocked while liveness is Unknown");
+}
+
+#[tokio::test]
+async fn test_strict_10mb_log_cap_with_large_output() {
+    let temp = tempdir().unwrap();
+    let log_file_path = temp.path().join("attempt-1.log");
+
+    let file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&log_file_path)
+        .await
+        .unwrap();
+
+    let mut writer = runner::CappedLogWriter::new(file, runner::MAX_LOG_FILE_BYTES);
+
+    // Simulate 15 MB of output in 64KB chunks
+    let chunk = vec![b'A'; 64 * 1024];
+    for _ in 0..240 {
+        writer.write_chunk(&chunk).await.unwrap();
+    }
+
+    // Check disk file size
+    let metadata = std::fs::metadata(&log_file_path).unwrap();
+    let actual_size = metadata.len();
+
+    assert!(
+        actual_size <= runner::MAX_LOG_FILE_BYTES,
+        "Actual file size ({} bytes) must NOT exceed MAX_LOG_FILE_BYTES ({} bytes)",
+        actual_size,
+        runner::MAX_LOG_FILE_BYTES
+    );
+    assert_eq!(
+        actual_size,
+        runner::MAX_LOG_FILE_BYTES,
+        "File size should match exactly the 10MB cap when output exceeds 15MB"
+    );
 }
 

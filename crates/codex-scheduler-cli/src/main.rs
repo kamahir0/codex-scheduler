@@ -307,8 +307,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let is_active = codex_scheduler_core::runner::is_runner_active(&job.id);
+                        let runner_info = codex_scheduler_core::runner::read_runner_info(&job.id);
+                        let (codex_alive, liveness_state_str) = match runner_info {
+                            Some(ref info) => {
+                                let liveness = codex_scheduler_core::runner::check_codex_process_liveness(info);
+                                match liveness {
+                                    codex_scheduler_core::runner::LivenessState::RunnerActive => (true, "runner_active"),
+                                    codex_scheduler_core::runner::LivenessState::ChildActive => (true, "child_active"),
+                                    codex_scheduler_core::runner::LivenessState::Dead => (false, "unknown"),
+                                    codex_scheduler_core::runner::LivenessState::Unknown => (false, "unknown"),
+                                }
+                            }
+                            None => {
+                                if is_active {
+                                    (false, "runner_active")
+                                } else {
+                                    (false, "unknown")
+                                }
+                            }
+                        };
                         let active_execution = serde_json::json!({
                             "is_runner_active": is_active,
+                            "codex_process_alive": codex_alive,
+                            "liveness_state": liveness_state_str,
                             "attempt_number": current_attempt,
                             "log_path": path_str,
                             "latest_output": latest_output,
@@ -393,6 +414,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     json,
                 );
             }
+            Err(CoreError::CannotCancelRunningJob(id)) => {
+                print_error_and_exit(
+                    "cannot_cancel_running_job",
+                    &format!("Cannot cancel job '{}' while execution is active", id),
+                    json,
+                );
+            }
             Err(e) => print_error_and_exit("cancel_failed", &e.to_string(), json),
         },
         Commands::Delete { job_id, json } => match service.delete_job(&job_id) {
@@ -409,10 +437,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Job {} has been deleted.", job_id);
                 }
             }
-            Ok(false) => {
+            Ok(false) | Err(CoreError::JobNotFound(_)) => {
                 print_error_and_exit(
                     "job_not_found",
                     &format!("Job '{}' was not found.", job_id),
+                    json,
+                );
+            }
+            Err(CoreError::CannotDeleteRunningJob(id)) => {
+                print_error_and_exit(
+                    "cannot_delete_running_job",
+                    &format!("Cannot delete job '{}' while execution is active", id),
                     json,
                 );
             }

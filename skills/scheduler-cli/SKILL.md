@@ -167,7 +167,8 @@ codex-scheduler list --json
 codex-scheduler show "<job-id>" --json
 ```
 
-- 実行中（`status == "running"`）のジョブでは、戻り値の JSON に `active_execution`（`is_runner_active`, `attempt_number`, `log_path`, `latest_output`）が含まれる。
+- 実行中（`status == "running"`）のジョブでは、戻り値の JSON に `active_execution`（`is_runner_active`, `codex_process_alive`, `liveness_state`, `attempt_number`, `log_path`, `latest_output`）が含まれる。
+- `liveness_state`（`"runner_active"` | `"child_active"` | `"unknown"`）により、Runner プロセスだけでなく Codex 子プロセスの生存状況を正確に判定できる。
 - 実行中の進捗確認は、`show --json` の `active_execution.latest_output` または `log_path` の read-only 読み取りによって行う。
 - **状況確認を目的として、同一 Codex セッションに対して追加の `codex resume` や `codex exec resume` を別プロセスとして起動してはならない（MUST NOT）**。
 
@@ -188,6 +189,7 @@ codex-scheduler delete "<job-id>" --json
 ```
 
 mutation 前に `show --json` で exact job ID と状態を確認する。
+**実行中（`Running` または active execution 保持中）のジョブに対しては、同一セッションへの二重 writer 事故を防止するため `cancel` および `delete` は拒絶されエラーとなる。**
 
 `delete` は履歴を含むジョブを消すため、Human が削除を求めた場合、または current task で agent 自身が作成した一時検証jobの cleanup が明確な場合に限定する。通常の予定変更では、対象を確認して `cancel` してから新しいjobを `schedule` する。
 

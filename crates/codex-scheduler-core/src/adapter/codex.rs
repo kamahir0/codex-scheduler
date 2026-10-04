@@ -2,7 +2,7 @@ use super::{AdapterError, ExecutionResult, ProviderAdapter};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 pub struct CodexAdapter {
@@ -95,7 +95,7 @@ impl CodexAdapter {
         // RATIONALE: [SCHED-JOB-006] Record child PID and OS start-time immediately after spawn
         // Persists RunnerInfo so orphan recovery can distinguish surviving Codex child from total termination.
         if let (Some(jid), Some(c_pid)) = (job_id, child.id()) {
-            let start_time = crate::runner::get_process_start_time(c_pid);
+            let start_time = crate::runner::get_process_start_time(c_pid).ok().flatten();
             let info = crate::runner::RunnerInfo {
                 job_id: jid.to_string(),
                 session_id: session_id.to_string(),
@@ -109,17 +109,21 @@ impl CodexAdapter {
 
         // RATIONALE: [CODEX-RESUME-009] Best-effort log file initialization with graceful fallback
         // If the log directory or file cannot be opened, execution proceeds with bounded in-memory log.
-        let log_file = if let Some(path) = log_path {
+        let log_writer = if let Some(path) = log_path {
             if let Some(parent) = path.parent() {
                 let _ = tokio::fs::create_dir_all(parent).await;
             }
-            tokio::fs::OpenOptions::new()
+            match tokio::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(path)
                 .await
-                .ok()
-                .map(|f| std::sync::Arc::new(tokio::sync::Mutex::new(f)))
+            {
+                Ok(file) => Some(std::sync::Arc::new(tokio::sync::Mutex::new(
+                    crate::runner::CappedLogWriter::new(file, crate::runner::MAX_LOG_FILE_BYTES),
+                ))),
+                Err(_) => None,
+            }
         } else {
             None
         };
@@ -128,11 +132,9 @@ impl CodexAdapter {
         let mut stderr_pipe = child.stderr.take().expect("stderr piped");
 
         let quota_detected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let written_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-        let log_file_stdout = log_file.clone();
+        let log_writer_stdout = log_writer.clone();
         let quota_stdout = quota_detected.clone();
-        let written_stdout = written_bytes.clone();
         let stdout_handle = tokio::spawn(async move {
             let mut bounded = Vec::new();
             let mut buf = [0u8; 4096];
@@ -167,20 +169,10 @@ impl CodexAdapter {
                     sliding_window.drain(..drain_len);
                 }
 
-                // Capped disk log persistence
-                if let Some(ref file_mutex) = log_file_stdout {
-                    let current = written_stdout.load(std::sync::atomic::Ordering::Relaxed);
-                    if current < crate::runner::MAX_LOG_FILE_BYTES {
-                        let mut file = file_mutex.lock().await;
-                        let _ = file.write_all(chunk).await;
-                        let _ = file.flush().await;
-                        let new_total = written_stdout.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed) + chunk.len() as u64;
-                        if new_total >= crate::runner::MAX_LOG_FILE_BYTES {
-                            let cap_msg = b"\n[...log file reached max size 10MB, further output capped...]\n";
-                            let _ = file.write_all(cap_msg).await;
-                            let _ = file.flush().await;
-                        }
-                    }
+                // Strict capped disk log persistence under file lock
+                if let Some(ref writer_mutex) = log_writer_stdout {
+                    let mut writer = writer_mutex.lock().await;
+                    let _ = writer.write_chunk(chunk).await;
                 }
 
                 bounded.extend_from_slice(chunk);
@@ -193,9 +185,8 @@ impl CodexAdapter {
             (bounded, truncated)
         });
 
-        let log_file_stderr = log_file.clone();
+        let log_writer_stderr = log_writer.clone();
         let quota_stderr = quota_detected.clone();
-        let written_stderr = written_bytes.clone();
         let stderr_handle = tokio::spawn(async move {
             let mut bounded = Vec::new();
             let mut buf = [0u8; 4096];
@@ -230,20 +221,10 @@ impl CodexAdapter {
                     sliding_window.drain(..drain_len);
                 }
 
-                // Capped disk log persistence
-                if let Some(ref file_mutex) = log_file_stderr {
-                    let current = written_stderr.load(std::sync::atomic::Ordering::Relaxed);
-                    if current < crate::runner::MAX_LOG_FILE_BYTES {
-                        let mut file = file_mutex.lock().await;
-                        let _ = file.write_all(chunk).await;
-                        let _ = file.flush().await;
-                        let new_total = written_stderr.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed) + chunk.len() as u64;
-                        if new_total >= crate::runner::MAX_LOG_FILE_BYTES {
-                            let cap_msg = b"\n[...log file reached max size 10MB, further output capped...]\n";
-                            let _ = file.write_all(cap_msg).await;
-                            let _ = file.flush().await;
-                        }
-                    }
+                // Strict capped disk log persistence under file lock
+                if let Some(ref writer_mutex) = log_writer_stderr {
+                    let mut writer = writer_mutex.lock().await;
+                    let _ = writer.write_chunk(chunk).await;
                 }
 
                 bounded.extend_from_slice(chunk);

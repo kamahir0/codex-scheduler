@@ -30,6 +30,14 @@ pub enum CoreError {
     Runner(#[from] runner::RunnerError),
     #[error("Job not found: {0}")]
     JobNotFound(String),
+    #[error("Cannot cancel running job: {0}")]
+    CannotCancelRunningJob(String),
+    #[error("Cannot delete job while execution is active: {0}")]
+    CannotDeleteRunningJob(String),
+    #[error("Another job for session '{0}' is already running")]
+    SessionBusy(String),
+    #[error("Invalid state transition: {0}")]
+    InvalidStateTransition(String),
 }
 
 pub struct SchedulerService {
@@ -240,11 +248,22 @@ impl SchedulerService {
         Ok(job)
     }
 
+    // RATIONALE: [SCHED-JOB-005] Guard against cancelling running jobs to prevent session writer collisions
     pub fn cancel_job(&self, job_id: &str) -> Result<Job, CoreError> {
         let mut job = self
             .store
             .get_job(job_id)?
             .ok_or_else(|| CoreError::JobNotFound(job_id.to_string()))?;
+
+        if job.status == JobStatus::Running || runner::get_job_liveness(job_id) != runner::LivenessState::Dead {
+            return Err(CoreError::CannotCancelRunningJob(job_id.to_string()));
+        }
+
+        if !matches!(job.status, JobStatus::Scheduled | JobStatus::Retrying) {
+            return Err(CoreError::InvalidStateTransition(
+                format!("Only scheduled or retrying jobs can be cancelled (current status: {:?})", job.status),
+            ));
+        }
 
         job.set_status(JobStatus::Cancelled);
         self.store.update_job(&job)?;
@@ -255,7 +274,17 @@ impl SchedulerService {
         Ok(job)
     }
 
+    // RATIONALE: [SCHED-JOB-005] Guard against deleting running jobs to prevent session writer collisions
     pub fn delete_job(&self, job_id: &str) -> Result<bool, CoreError> {
+        let job = match self.store.get_job(job_id)? {
+            Some(j) => j,
+            None => return Ok(false),
+        };
+
+        if job.status == JobStatus::Running || runner::get_job_liveness(job_id) != runner::LivenessState::Dead {
+            return Err(CoreError::CannotDeleteRunningJob(job_id.to_string()));
+        }
+
         let _ = self.scheduler.unregister_job(job_id);
         let _ = runner::cleanup_job_logs(job_id);
         runner::cleanup_runner_files(job_id);
@@ -264,30 +293,42 @@ impl SchedulerService {
 
     // RATIONALE: [SCHED-JOB-007] Automatic orphan job recovery during periodic scheduler tick
     // Scans jobs currently marked Running and checks whether an exclusive runner lock is held.
+    // Respects handoff grace period to prevent race conditions during detached runner startup.
     // If no runner lock is held, verifies whether the recorded Codex child process is still alive.
-    // If child process is still running on the OS, maintains Running to prevent concurrent duplicate writers.
-    // If child process has terminated or machine rebooted, records aborted attempt and recovers to Failed or Retrying.
+    // If child process is still running or liveness is Unknown, maintains Running to prevent concurrent duplicate writers.
+    // Only recovers to Failed or Retrying if child process is definitively Dead.
     pub fn reconcile_running_jobs(&self) -> Result<Vec<Job>, CoreError> {
         Ok(self.store.with_lock(|| {
             let mut jobs = self.store.load_all()?;
             let mut recovered = Vec::new();
+            let now = Utc::now();
 
             for job in jobs.iter_mut() {
                 if job.status == JobStatus::Running && !runner::is_runner_active(&job.id) {
-                    // Check if Codex child process is still alive despite lost runner lock
-                    if let Some(info) = runner::read_runner_info(&job.id) {
-                        if runner::is_codex_process_alive(&info) {
-                            // Codex child process is still actively running on OS!
-                            // Do NOT mark Failed or Retrying; maintain Running to guard against duplicate writers.
+                    // Check handoff grace period: if claimed very recently (< 15 seconds) and no runner info yet,
+                    // the runner process may still be in the middle of spawning. Do not prematurely recover.
+                    let info_opt = runner::read_runner_info(&job.id);
+                    if info_opt.is_none() {
+                        let elapsed = now.signed_duration_since(job.updated_at);
+                        if elapsed < chrono::Duration::seconds(15) {
                             continue;
                         }
                     }
 
-                    // Codex child process has terminated (or machine rebooted / never spawned)
+                    // Check if Codex child process is alive or unknown despite lost runner lock
+                    if let Some(ref info) = info_opt {
+                        let liveness = runner::check_codex_process_liveness(info);
+                        if liveness != runner::LivenessState::Dead {
+                            // Child is actively running or liveness observation failed (Unknown).
+                            // Fail-closed: maintain Running to prevent concurrent duplicate writers.
+                            continue;
+                        }
+                    }
+
+                    // Codex child process is definitively Dead and runner lock is released
                     runner::cleanup_runner_files(&job.id);
 
                     let attempt_number = (job.execution_history.len() + 1) as u32;
-                    let now = Utc::now();
                     let attempt = ExecutionAttempt {
                         attempt_number,
                         started_at: job.updated_at,
@@ -386,10 +427,19 @@ impl SchedulerService {
     }
 
     // RATIONALE: [SCHED-JOB-006] Independent runner execution with lock-based liveness and streaming logs
-    // Executed by the detached runner process. Acquires exclusive OS lock, executes Codex with streaming logs,
-    // updates store, and safely exits. Handles both pre-claimed tick jobs and manual runner invocations.
+    // Executed by the detached runner process. Acquires exclusive OS lock, verifies previous child is not alive,
+    // claims job atomically, executes Codex with streaming logs, updates store, and safely exits.
     pub async fn run_job_runner(&self, job_id: &str) -> Result<Job, CoreError> {
         let _lock = runner::RunnerLock::acquire(job_id)?;
+
+        // RATIONALE: [SCHED-JOB-006] Prevent second writer if previous Codex child is still alive
+        if let Some(info) = runner::read_runner_info(job_id) {
+            if runner::check_codex_process_liveness(&info) != runner::LivenessState::Dead {
+                return Err(CoreError::SessionBusy(
+                    format!("Previous Codex child process is still alive for job {}", job_id),
+                ));
+            }
+        }
 
         let mut job = self
             .store

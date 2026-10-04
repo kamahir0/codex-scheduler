@@ -104,46 +104,69 @@ pub fn runner_log_path(job_id: &str, attempt_number: u32) -> Result<PathBuf, Run
     Ok(dir.join(format!("attempt-{}.log", attempt_number)))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LivenessState {
+    RunnerActive,
+    ChildActive,
+    Dead,
+    Unknown,
+}
+
 #[cfg(windows)]
-pub fn get_process_start_time(pid: u32) -> Option<String> {
-    use windows::Win32::Foundation::CloseHandle;
+pub fn get_process_start_time(pid: u32) -> Result<Option<String>, ()> {
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
     use windows::Win32::System::Threading::{OpenProcess, GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::Foundation::FILETIME;
     unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut creation = FILETIME::default();
-        let mut exit = FILETIME::default();
-        let mut kernel = FILETIME::default();
-        let mut user = FILETIME::default();
-        let res = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
-        let _ = CloseHandle(handle);
-        if res.is_ok() {
-            let time_u64 = ((creation.dwHighDateTime as u64) << 32) | (creation.dwLowDateTime as u64);
-            Some(time_u64.to_string())
-        } else {
-            None
+        match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(handle) => {
+                let mut creation = FILETIME::default();
+                let mut exit = FILETIME::default();
+                let mut kernel = FILETIME::default();
+                let mut user = FILETIME::default();
+                let res = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+                let _ = CloseHandle(handle);
+                if res.is_ok() {
+                    let time_u64 = ((creation.dwHighDateTime as u64) << 32) | (creation.dwLowDateTime as u64);
+                    Ok(Some(time_u64.to_string()))
+                } else {
+                    Err(())
+                }
+            }
+            Err(_) => {
+                let err_code = GetLastError();
+                if err_code == ERROR_INVALID_PARAMETER {
+                    Ok(None)
+                } else {
+                    Err(())
+                }
+            }
         }
     }
 }
 
 #[cfg(not(windows))]
-pub fn get_process_start_time(pid: u32) -> Option<String> {
-    let output = std::process::Command::new("ps")
+pub fn get_process_start_time(pid: u32) -> Result<Option<String>, ()> {
+    let output = match std::process::Command::new("ps")
         .arg("-p")
         .arg(pid.to_string())
         .arg("-o")
         .arg("lstart=")
         .output()
-        .ok()?;
+    {
+        Ok(out) => out,
+        Err(_) => return Err(()),
+    };
+
     if output.status.success() {
         let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !s.is_empty() {
-            Some(s)
+            Ok(Some(s))
         } else {
-            None
+            Ok(None)
         }
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -201,17 +224,29 @@ impl Drop for RunnerLock {
 // RATIONALE: [SCHED-JOB-006] Verify child process execution liveness using PID and OS start-time
 // Prevents PID wrap-around errors and ensures second writer is never spawned while child process is alive.
 pub fn is_codex_process_alive(info: &RunnerInfo) -> bool {
+    check_codex_process_liveness(info) == LivenessState::ChildActive
+}
+
+/// Evaluates three-state liveness (ChildActive, Dead, Unknown) for recorded Codex child process.
+pub fn check_codex_process_liveness(info: &RunnerInfo) -> LivenessState {
     let pid = match info.codex_pid {
         Some(p) => p,
-        None => return false,
+        None => return LivenessState::Unknown,
     };
     let expected_start = match info.codex_start_time.as_deref() {
         Some(t) => t,
-        None => return false,
+        None => return LivenessState::Unknown,
     };
     match get_process_start_time(pid) {
-        Some(actual_start) => actual_start == expected_start,
-        None => false,
+        Ok(Some(actual_start)) => {
+            if actual_start == expected_start {
+                LivenessState::ChildActive
+            } else {
+                LivenessState::Dead
+            }
+        }
+        Ok(None) => LivenessState::Dead,
+        Err(()) => LivenessState::Unknown,
     }
 }
 
@@ -239,6 +274,65 @@ pub fn is_runner_active(job_id: &str) -> bool {
         Err(_) => false,
     }
 }
+
+/// Evaluates comprehensive execution liveness for a job across Runner lock and Codex child process.
+pub fn get_job_liveness(job_id: &str) -> LivenessState {
+    if is_runner_active(job_id) {
+        return LivenessState::RunnerActive;
+    }
+    match read_runner_info(job_id) {
+        Some(info) => check_codex_process_liveness(&info),
+        None => LivenessState::Dead,
+    }
+}
+
+// RATIONALE: [CODEX-RESUME-009] Strict 10MB capped log persistence
+// Ensures disk log files never exceed MAX_LOG_FILE_BYTES (10MB) combined across stdout and stderr.
+pub struct CappedLogWriter {
+    file: tokio::fs::File,
+    written_bytes: u64,
+    max_bytes: u64,
+}
+
+impl CappedLogWriter {
+    pub fn new(file: tokio::fs::File, max_bytes: u64) -> Self {
+        Self {
+            file,
+            written_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    pub async fn write_chunk(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        if self.written_bytes >= self.max_bytes {
+            return Ok(());
+        }
+
+        let remaining = (self.max_bytes - self.written_bytes) as usize;
+        let cap_marker = b"\n[...log file reached max size 10MB, further output capped...]\n";
+
+        if chunk.len() < remaining {
+            self.file.write_all(chunk).await?;
+            self.written_bytes += chunk.len() as u64;
+        } else {
+            // chunk reaches or exceeds cap
+            if remaining > cap_marker.len() {
+                let chunk_fit = remaining - cap_marker.len();
+                if chunk_fit > 0 {
+                    self.file.write_all(&chunk[..chunk_fit]).await?;
+                }
+                self.file.write_all(cap_marker).await?;
+            } else {
+                self.file.write_all(&chunk[..remaining]).await?;
+            }
+            self.written_bytes = self.max_bytes;
+        }
+        self.file.flush().await?;
+        Ok(())
+    }
+}
+
 
 // RATIONALE: [SCHED-JOB-004] Bounded memory and store footprint with streaming file log persistence
 // Prevents memory exhaustion and unbounded jobs.json growth by trimming to the latest bounded window.

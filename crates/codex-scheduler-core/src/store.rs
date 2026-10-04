@@ -18,6 +18,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("Job is already running: {0}")]
     AlreadyRunning(String),
+    #[error("Another job for session '{0}' is already running")]
+    SessionBusy(String),
 }
 
 #[derive(Debug, Clone)]
@@ -208,15 +210,37 @@ impl JobStore {
         })
     }
 
-    /// Atomically claims a single job for execution, ensuring it is not already running.
+    // RATIONALE: [OS-SCHED-003] Prevent concurrent duplicate writers across all execution entry points
+    // Ensures neither the target job nor any other job with the same session_id is Running or active.
+    /// Atomically claims a single job for execution, ensuring neither it nor any other job
+    /// with the same session_id is currently Running or actively executing.
     pub fn claim_job_for_execution(&self, id: &str) -> Result<Job, StoreError> {
         self.with_lock(|| {
             let mut jobs = self.load_all()?;
+            let target_session_id = {
+                let target = jobs
+                    .iter()
+                    .find(|j| j.id == id)
+                    .ok_or_else(|| StoreError::NotFound(id.to_string()))?;
+                if target.status == crate::models::JobStatus::Running {
+                    return Err(StoreError::AlreadyRunning(id.to_string()));
+                }
+                target.session_id.clone()
+            };
+
+            for job in jobs.iter() {
+                if job.session_id == target_session_id {
+                    if job.status == crate::models::JobStatus::Running {
+                        return Err(StoreError::SessionBusy(target_session_id));
+                    }
+                    if crate::runner::get_job_liveness(&job.id) != crate::runner::LivenessState::Dead {
+                        return Err(StoreError::SessionBusy(target_session_id));
+                    }
+                }
+            }
+
             for job in jobs.iter_mut() {
                 if job.id == id {
-                    if job.status == crate::models::JobStatus::Running {
-                        return Err(StoreError::AlreadyRunning(id.to_string()));
-                    }
                     job.set_status(crate::models::JobStatus::Running);
                     let claimed = job.clone();
                     self.save_all(&jobs)?;

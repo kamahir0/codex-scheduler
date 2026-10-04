@@ -71,10 +71,11 @@ Domain: SCHED
 
 完全なストリーミング実行ログは、ディスク上のログファイル（`~/.codex-scheduler/logs/<job_id>/attempt-<attempt_number>.log`）に保存されなければならない（MUST）。
 
-### SCHED-JOB-005: ジョブのキャンセルと削除
+### SCHED-JOB-005: ジョブのキャンセルと削除の排他保護
 
 1. ユーザーが `scheduled` または `retrying` のジョブをキャンセルした場合、ステータスを `cancelled` に更新し、OSスケジューラから該当タスクを登録解除しなければならない（MUST）。
-2. ジョブが削除された場合、ストアから除去するとともに、OSスケジューラから該当タスクを確実に登録解除しなければならない（MUST）。
+2. ステータスが `Running` であるジョブ、または RunnerLock や Codex 子プロセスが生存中（Liveness が `Dead` 以外）であるジョブに対して、キャンセル（`cancel`）および削除（`delete`）を試みた場合、操作を拒絶しエラーを返さなければならない（MUST NOT permit; MUST return error）。これにより、実行中ジョブのセッション排他 guard が消失して同一セッションへの second writer が起動されることを 100% 抑止しなければならない（MUST）。
+3. ジョブの削除は、非実行中（`scheduled`, `retrying`, `succeeded`, `failed`, `cancelled` であり、かつ active な Runner または Codex 子プロセスが存在しない場合）にのみ許可され、ストアから除去するとともにログおよびメタデータをクリーンアップしなければならない（MUST）。
 
 ### SCHED-JOB-006: 長時間ジョブ実行ランナーと生存性（Liveness）保証
 
@@ -84,17 +85,20 @@ Domain: SCHED
    - Runnerプロセスは、ジョブ実行開始時にジョブ専用のロックファイル（`~/.codex-scheduler/runners/<job_id>.lock`）の排他ロック（exclusive file lock）を取得しなければならない（MUST）。
    - Runnerプロセスは、Codexの実行中、このファイルロックを解放せず保持し続けなければならない（MUST）。
    - Runnerプロセスは、Codex子プロセスの起動直後、ランナーメタデータ（`~/.codex-scheduler/runners/<job_id>.json`）に `runner_pid`、`codex_pid`、およびOSから取得した起動時刻（`codex_start_time`）を記録しなければならない（MUST）。
-   - Liveness判定は、Runnerプロセスが保持するファイルロックを第一根拠とし、ロックが失われた場合でもCodex子プロセスのOS生存確認（PIDおよび起動時刻の照合）を行わなければならない（MUST）。PID存在確認のみに依存した判定を行ってはならない（MUST NOT）。
+3. **三値 Liveness 判定とハンドオフ保護**:
+   - Liveness 判定は、`Alive`（RunnerLock 保持または Codex 子プロセス生存）、`Dead`（OS 上でプロセスが終了していることを確認）、`Unknown`（システム呼出失敗・情報取得失敗等で生死を確定できない）の三値を明確に区別しなければならない（MUST）。
+   - スケジューラ tick による claim から Runner プロセスがロックを取得するまでのハンドオフ期間中（起動猶予時間）、ジョブを孤立クラッシュと誤判定して回復してはならない（MUST NOT）。
+   - `Unknown` の場合は fail-closed として扱い、ジョブを `Running` のまま維持して回復を保留し、同一セッションへの二重 writer 起動をブロックしなければならない（MUST）。
 
 ### SCHED-JOB-007: クラッシュおよび孤立ジョブの自動回復（Orphan Recovery）
 
 1. **孤立Runningジョブの検知とCodex子プロセス保護**:
    - スケジューラtick実行時、ストア上でステータスが `Running` であるジョブについて、対応するロックファイルの排他ロック取得を試行しなければならない（MUST）。
    - ロックが取得できない場合（`WouldBlock` 等）、Runnerプロセスは現在正常に生存・実行中であると判定し、ステータスを変更してはならない（MUST NOT）。
-   - ロックが取得できた場合（Runnerプロセスが失われた場合）、記録された `codex_pid` および `codex_start_time` に基づいてCodex子プロセスのOS上の生存を確認しなければならない（MUST）。
-   - **Codex子プロセスがOS上で生存している場合、ステータスを `Running` のまま維持し、回復処理を行ってはならない（MUST NOT）**。これにより同一セッションに対する二重writer起動を防止しなければならない（MUST）。
+   - ロックが取得できた場合（Runnerプロセスが失われた場合）、記録された `codex_pid` および `codex_start_time` に基づいてCodex子プロセスの Liveness を照合しなければならない（MUST）。
+   - **Codex子プロセスが `Alive` または `Unknown` の場合、ステータスを `Running` のまま維持し、回復処理を行ってはならない（MUST NOT）**。これにより同一セッションに対する二重writer起動を防止しなければならない（MUST）。
 2. **回復アクション**:
-   - Codex子プロセスが終了している（またはマシン再起動等により存在しない）ことが確認された場合にのみ、異常終了試行（`exit_code: None`, `error_message: "Runner process terminated unexpectedly (process crash or system restart)"`）を追加し、リトライポリシーに基づいて `Failed` または `Retrying` へ安全に遷移させ、メタデータとロックファイルをクリーンアップしなければならない（MUST）。これによりジョブが永久に `Running` に取り残されることを防止する。
+   - ハンドオフ猶予期間を過ぎ、かつ Codex 子プロセスが確実に `Dead` であることが確認された場合にのみ、異常終了試行（`exit_code: None`, `error_message: "Runner process terminated unexpectedly (process crash or system restart)"`）を追加し、リトライポリシーに基づいて `Failed` または `Retrying` へ安全に遷移させ、メタデータとロックファイルをクリーンアップしなければならない（MUST）。これによりジョブが永久に `Running` に取り残されることを防止する。
 
 ## 検証ルール
 

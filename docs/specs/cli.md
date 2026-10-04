@@ -74,6 +74,8 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
    - 基本スキーマは `Job` 構造体の完全な JSON 表現とする。
    - ジョブステータスが `Running` の場合、以下の `active_execution` オブジェクトをトップレベルに付与しなければならない（MUST）：
      - `is_runner_active`: bool（Runnerプロセスの排他ロックが保持されているか）
+     - `codex_process_alive`: bool（Codex子プロセスがOS上で生存しているか）
+     - `liveness_state`: string（実行生存状態: `"runner_active" | "child_active" | "unknown"`）
      - `attempt_number`: u32（現在実行中の試行番号）
      - `log_path`: string（ディスク上の試行ログファイル絶対パス）
      - `latest_output`: string（ディスクログから抽出された直近の bounded tail 文字列）

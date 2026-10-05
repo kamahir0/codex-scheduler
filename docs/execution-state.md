@@ -1,14 +1,18 @@
 # Development State
 
 Stage: verification-ready
-Candidate: 98ac3f4be74c7c10e2fdaac25b1bbc63e0bfaacd
-Work base: d21cc4eb42ef3a7281f96e4c7333630f9a2ce01c
+Candidate: 6dedc19
+Work base: 98ac3f4be74c7c10e2fdaac25b1bbc63e0bfaacd
 
 ## Active work
 
-- In progress: macOS / Windows CI verification & fresh review-code [SCHED-JOB-006, SCHED-JOB-007, OS-SCHED-003, CODEX-RESUME-009, CLI-CMD-003]
-- Remaining: remote CI evidence & review-code report
+- Completed: Resolution of 5 independent review blocking issues (RunnerLock Drop evidence preservation, claim->lease crash gap, child termination confirmation on metadata failure, Windows reboot identity stability, strict log cap on metadata error)
+- Next: Git commit & push, remote CI verification, fresh independent review-code
 
-## Blocking findings
+## Resolved blocking findings
 
-None.
+1. RunnerLock::Drop no longer calls cleanup_runner_files; execution evidence is preserved across rejected manual run-job invocations.
+2. Initial durable lease is established before persisting Running status in JobStore; updated lease failure terminates runner and rolls back to Failed.
+3. Child termination on RunnerInfo write failure is awaited/confirmed (5s timeout); unconfirmed termination writes corrupt marker to fail-closed as Unknown.
+4. Windows reboot identity uses monotonic GetTickCount64 rollback without wall-clock subtraction.
+5. CappedLogWriter falls back to bounded memory log if metadata len cannot be determined, strictly respecting MAX_LOG_FILE_BYTES.

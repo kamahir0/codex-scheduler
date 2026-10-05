@@ -1,18 +1,19 @@
 # Development State
 
 Stage: verification-ready
-Candidate: 1e03f11
-Work base: 98ac3f4be74c7c10e2fdaac25b1bbc63e0bfaacd
+Candidate: 8cf4513dbe2277bfa70e6e387632b6ab2033afeb
+Work base: 1e03f11
 
 ## Active work
 
-- Completed: Resolution of 5 independent review blocking issues (RunnerLock Drop evidence preservation, claim->lease crash gap, child termination confirmation on metadata failure, Windows reboot identity stability, strict log cap on metadata error)
-- Next: Git commit & push, remote CI verification, fresh independent review-code
+- Completed:
+  1. Universal same-session liveness guard in claim_due_jobs & unified claim invariant
+  2. Confirmed runner & child termination on updated HandoffLease write failure
+  3. Fail-closed unconfirmed Codex termination handling (preventing conversion to normal failure)
+  4. Elimination of PID-only liveness fallback (tick_start_time, runner OS start identity, anti-PID-reuse)
+  5. State housekeeping & fresh evidence synchronization
+- Remaining: Remote CI & independent fresh code review
 
-## Resolved blocking findings
+## Blocking findings
 
-1. RunnerLock::Drop no longer calls cleanup_runner_files; execution evidence is preserved across rejected manual run-job invocations.
-2. Initial durable lease is established before persisting Running status in JobStore; updated lease failure terminates runner and rolls back to Failed.
-3. Child termination on RunnerInfo write failure is awaited/confirmed (5s timeout); unconfirmed termination writes corrupt marker to fail-closed as Unknown.
-4. Windows reboot identity uses monotonic GetTickCount64 rollback without wall-clock subtraction.
-5. CappedLogWriter falls back to bounded memory log if metadata len cannot be determined, strictly respecting MAX_LOG_FILE_BYTES.
+None.

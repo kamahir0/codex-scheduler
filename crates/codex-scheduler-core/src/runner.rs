@@ -539,6 +539,9 @@ pub fn check_codex_process_liveness(info: &RunnerInfo) -> LivenessState {
 
 /// Kills a process by PID across platforms (SIGKILL on Unix, TerminateProcess on Windows).
 pub fn kill_process(pid: u32) {
+    if pid == 0 {
+        return;
+    }
     #[cfg(windows)]
     {
         use windows::Win32::Foundation::CloseHandle;

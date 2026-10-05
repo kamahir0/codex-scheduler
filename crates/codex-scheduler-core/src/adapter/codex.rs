@@ -105,13 +105,26 @@ impl CodexAdapter {
                 codex_start_time: start_time,
             };
             if let Err(e) = crate::runner::write_runner_info(&info) {
-                // RATIONALE: [SCHED-JOB-006] Fail-closed runner info persistence
-                // Terminate spawned child process immediately to prevent leaving untracked survivors.
+                // RATIONALE: [SCHED-JOB-006] Confirm child termination on metadata persistence failure
+                // If writing runner info fails, kill child and await/confirm its termination.
+                // If termination cannot be confirmed, persist failure evidence to guard as Unknown.
                 let _ = child.start_kill();
-                return Err(AdapterError::ProcessError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to persist runner metadata for job {}: {}", jid, e),
-                )));
+                let wait_res = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+                match wait_res {
+                    Ok(Ok(_)) => {
+                        return Err(AdapterError::ProcessError(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("Failed to persist runner metadata for job {}: {}. Child terminated successfully.", jid, e),
+                        )));
+                    }
+                    _ => {
+                        crate::runner::write_corrupt_runner_info_marker(jid, c_pid);
+                        return Err(AdapterError::ProcessError(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("Failed to persist runner metadata and could not confirm child termination for job {}: {}. Guarded as Unknown.", jid, e),
+                        )));
+                    }
+                }
             }
         }
 
@@ -127,12 +140,30 @@ impl CodexAdapter {
                 .open(path)
                 .await
             {
-                Ok(file) => {
-                    let existing_len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
-                    Some(std::sync::Arc::new(tokio::sync::Mutex::new(
-                        crate::runner::CappedLogWriter::new(file, crate::runner::MAX_LOG_FILE_BYTES, existing_len),
-                    )))
-                }
+                Ok(file) => match file.metadata().await {
+                    Ok(meta) => {
+                        let existing_len = meta.len();
+                        Some(std::sync::Arc::new(tokio::sync::Mutex::new(
+                            crate::runner::CappedLogWriter::new(
+                                file,
+                                crate::runner::MAX_LOG_FILE_BYTES,
+                                existing_len,
+                            ),
+                        )))
+                    }
+                    Err(e) => {
+                        // RATIONALE: [CODEX-RESUME-009] Strict log cap on metadata failure
+                        // If file metadata length cannot be determined, do NOT assume 0.
+                        // Halt disk append for this attempt and fall back to bounded in-memory log
+                        // to guarantee file size NEVER exceeds MAX_LOG_FILE_BYTES.
+                        eprintln!(
+                            "[Runner] Warning: failed to read log file metadata for {}: {}. Falling back to memory log.",
+                            path.display(),
+                            e
+                        );
+                        None
+                    }
+                },
                 Err(_) => None,
             }
         } else {

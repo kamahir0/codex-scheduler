@@ -36,7 +36,12 @@ pub struct HandoffLease {
     pub tick_pid: u32,
     pub runner_pid: Option<u32>,
     pub runner_start_time: Option<String>,
+    #[serde(default)]
+    pub boot_id: Option<String>,
+    #[serde(default)]
     pub boot_time: Option<u64>,
+    #[serde(default)]
+    pub uptime_ms: Option<u64>,
     pub claimed_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -197,8 +202,8 @@ pub fn runner_log_path(job_id: &str, attempt_number: u32) -> Result<PathBuf, Run
     Ok(dir.join(format!("attempt-{}.log", attempt_number)))
 }
 
-// RATIONALE: [SCHED-JOB-007] System boot time detection for durable reboot recovery
-// Enables detecting machine reboots definitively, ensuring all prior processes are dead.
+// RATIONALE: [SCHED-JOB-007] System boot identity detection for durable reboot recovery
+// Enables detecting machine reboots definitively without relying on wall-clock arithmetic.
 #[cfg(target_os = "macos")]
 pub fn get_system_boot_time() -> Result<u64, ()> {
     let output = std::process::Command::new("sysctl")
@@ -238,12 +243,118 @@ pub fn get_system_boot_time() -> Result<u64, ()> {
 
 #[cfg(windows)]
 pub fn get_system_boot_time() -> Result<u64, ()> {
+    // Windows boot time is deliberately not derived from wall-clock subtraction to avoid false reboots.
+    Err(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn get_system_boot_id() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn get_system_boot_id() -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+pub fn get_system_uptime_ms() -> Result<u64, ()> {
     use windows::Win32::System::SystemInformation::GetTickCount64;
-    unsafe {
-        let uptime_ms = GetTickCount64();
-        let uptime_secs = uptime_ms / 1000;
-        let now_secs = chrono::Utc::now().timestamp().max(0) as u64;
-        Ok(now_secs.saturating_sub(uptime_secs))
+    unsafe { Ok(GetTickCount64()) }
+}
+
+#[cfg(target_os = "linux")]
+pub fn get_system_uptime_ms() -> Result<u64, ()> {
+    if let Ok(content) = std::fs::read_to_string("/proc/uptime") {
+        if let Some(sec_str) = content.split_whitespace().next() {
+            if let Ok(sec) = sec_str.parse::<f64>() {
+                return Ok((sec * 1000.0) as u64);
+            }
+        }
+    }
+    Err(())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn get_system_uptime_ms() -> Result<u64, ()> {
+    // macOS uses get_system_boot_time via sysctl kern.boottime
+    Err(())
+}
+
+pub fn current_boot_identity() -> (Option<String>, Option<u64>, Option<u64>) {
+    (
+        get_system_boot_id(),
+        get_system_boot_time().ok(),
+        get_system_uptime_ms().ok(),
+    )
+}
+
+impl HandoffLease {
+    pub fn new_initial(job_id: &str, tick_pid: u32, claimed_at: chrono::DateTime<chrono::Utc>) -> Self {
+        let (boot_id, boot_time, uptime_ms) = current_boot_identity();
+        Self {
+            job_id: job_id.to_string(),
+            tick_pid,
+            runner_pid: None,
+            runner_start_time: None,
+            boot_id,
+            boot_time,
+            uptime_ms,
+            claimed_at,
+        }
+    }
+
+    pub fn with_runner(&self, runner_pid: u32, runner_start_time: Option<String>) -> Self {
+        let mut updated = self.clone();
+        updated.runner_pid = Some(runner_pid);
+        updated.runner_start_time = runner_start_time;
+        updated
+    }
+}
+
+// RATIONALE: [SCHED-JOB-007] Stable machine reboot detection
+// Evaluates reboot evidence objectively:
+// 1. Windows: monotonic GetTickCount64 rollback (current_uptime < lease_uptime). Never uses wall-clock subtraction.
+// 2. Linux: kernel random boot_id UUID change, or /proc/stat btime mismatch.
+// 3. macOS: kern.boottime sec mismatch.
+// Returns false (fail-closed) if reboot cannot be proved objectively.
+pub fn is_reboot_detected(lease: &HandoffLease) -> bool {
+    // Check boot_id change (Linux)
+    if let (Some(lease_bid), Some(cur_bid)) = (&lease.boot_id, &get_system_boot_id()) {
+        if lease_bid != cur_bid {
+            return true;
+        }
+    }
+
+    // Check monotonic uptime rollback (Windows & Linux)
+    if let (Some(lease_uptime), Ok(cur_uptime)) = (lease.uptime_ms, get_system_uptime_ms()) {
+        if cur_uptime < lease_uptime {
+            return true;
+        }
+    }
+
+    // Check kernel boot timestamp change (macOS & Linux)
+    if let (Some(lease_boot), Ok(cur_boot)) = (lease.boot_time, get_system_boot_time()) {
+        if lease_boot != cur_boot {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Writes an unconfirmed termination marker for a job when child termination cannot be verified.
+/// Distinguishes Unknown state from normal Dead state.
+pub fn write_corrupt_runner_info_marker(job_id: &str, unconfirmed_pid: u32) {
+    if let Ok(dir) = runner_lock_dir() {
+        let path = dir.join(format!("{}.json", job_id));
+        let content = format!(
+            "{{\"job_id\":\"{}\",\"unconfirmed_child_pid\":{},\"status\":\"unconfirmed_termination\"}}",
+            job_id, unconfirmed_pid
+        );
+        let _ = fs::write(path, content);
     }
 }
 
@@ -390,7 +501,10 @@ impl Drop for RunnerLock {
     fn drop(&mut self) {
         remove_current_process_lock(&self.job_id);
         let _ = self.file.unlock();
-        cleanup_runner_files(&self.job_id);
+        // RATIONALE: [SCHED-JOB-006] Lock release MUST NOT delete execution evidence
+        // RunnerInfo and HandoffLease are owned by the execution lifecycle.
+        // They must NOT be removed when a lock is released due to conflict or foreign execution guard.
+        // Cleanup happens only when execution reaches terminal status or during orphan recovery.
     }
 }
 
@@ -420,6 +534,28 @@ pub fn check_codex_process_liveness(info: &RunnerInfo) -> LivenessState {
         }
         Ok(None) => LivenessState::Dead,
         Err(()) => LivenessState::Unknown,
+    }
+}
+
+/// Kills a process by PID across platforms (SIGKILL on Unix, TerminateProcess on Windows).
+pub fn kill_process(pid: u32) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        unsafe {
+            if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                let _ = TerminateProcess(handle, 1);
+                let _ = CloseHandle(handle);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .output();
     }
 }
 

@@ -303,7 +303,6 @@ impl SchedulerService {
             let mut jobs = self.store.load_all()?;
             let mut recovered = Vec::new();
             let now = Utc::now();
-            let current_boot_time = runner::get_system_boot_time().ok();
 
             for job in jobs.iter_mut() {
                 if job.status == JobStatus::Running && !runner::is_runner_active(&job.id) {
@@ -318,10 +317,8 @@ impl SchedulerService {
 
                     match lease_read {
                         runner::HandoffLeaseRead::Present(ref lease) => {
-                            if let (Some(cur_boot), Some(lease_boot)) = (current_boot_time, lease.boot_time) {
-                                if cur_boot != lease_boot {
-                                    reboot_detected = true;
-                                }
+                            if runner::is_reboot_detected(lease) {
+                                reboot_detected = true;
                             }
 
                             if !reboot_detected {
@@ -389,9 +386,7 @@ impl SchedulerService {
                                             // Runner process is still alive on OS! Do NOT recover.
                                             continue;
                                         }
-                                        Ok(None) => {
-                                            runner_confirmed_dead = true;
-                                        }
+                                        Ok(None) => {}
                                         Err(()) => {
                                             continue;
                                         }
@@ -482,31 +477,22 @@ impl SchedulerService {
         let mut spawned = Vec::new();
         if let Some(ref exe) = self.exe_path {
             if exe.is_file() {
-                let boot_time = runner::get_system_boot_time().ok();
                 for job in due_jobs {
-                    // Record initial lease before spawning
-                    let lease = runner::HandoffLease {
-                        job_id: job.id.clone(),
-                        tick_pid: std::process::id(),
-                        runner_pid: None,
-                        runner_start_time: None,
-                        boot_time,
-                        claimed_at: Utc::now(),
-                    };
-                    let _ = runner::write_handoff_lease(&lease);
-
                     match runner::spawn_detached_runner(exe, &job.id, self.is_desktop) {
                         Ok(runner_pid) => {
                             let runner_start = runner::get_process_start_time(runner_pid).ok().flatten();
-                            let updated_lease = runner::HandoffLease {
-                                job_id: job.id.clone(),
-                                tick_pid: std::process::id(),
-                                runner_pid: Some(runner_pid),
-                                runner_start_time: runner_start,
-                                boot_time,
-                                claimed_at: Utc::now(),
-                            };
-                            let _ = runner::write_handoff_lease(&updated_lease);
+                            let lease = runner::read_handoff_lease(&job.id)
+                                .unwrap_or_else(|| runner::HandoffLease::new_initial(&job.id, std::process::id(), now));
+                            let updated_lease = lease.with_runner(runner_pid, runner_start);
+                            if let Err(e) = runner::write_handoff_lease(&updated_lease) {
+                                eprintln!("[Tick] Failed to persist updated runner lease for job {}: {}", job.id, e);
+                                runner::kill_process(runner_pid);
+                                runner::cleanup_runner_files(&job.id);
+                                let mut failed_job = job;
+                                failed_job.set_status(JobStatus::Failed);
+                                let _ = self.store.update_job(&failed_job);
+                                continue;
+                            }
                             spawned.push(job);
                         }
                         Err(e) => {
@@ -652,6 +638,8 @@ impl SchedulerService {
         }
 
         self.store.update_job(&job)?;
+        // Terminal or retrying state persisted: clean up runner metadata and lease files
+        runner::cleanup_runner_files(&job.id);
         Ok(job)
     }
 }

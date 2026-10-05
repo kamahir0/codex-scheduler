@@ -196,6 +196,15 @@ impl JobStore {
                         continue;
                     }
 
+                    // RATIONALE: [SCHED-JOB-007] Establish durable lease BEFORE persisting Running status
+                    // Eliminates the crash window where a job is persisted as Running without lease evidence.
+                    // If lease write fails, skip claiming to keep job Scheduled/Retrying for retry.
+                    let lease = crate::runner::HandoffLease::new_initial(&job.id, std::process::id(), now);
+                    if let Err(e) = crate::runner::write_handoff_lease(&lease) {
+                        eprintln!("[Store] Failed to write initial lease for job {}: {}. Skipping claim.", job.id, e);
+                        continue;
+                    }
+
                     active_sessions.insert(job.session_id.clone());
                     job.set_status(crate::models::JobStatus::Running);
                     claimed.push(job.clone());
@@ -258,6 +267,11 @@ impl JobStore {
                     return Err(StoreError::SessionBusy(target_session_id));
                 }
             }
+
+            // Establish durable lease before persisting Running status
+            let lease = crate::runner::HandoffLease::new_initial(id, std::process::id(), chrono::Utc::now());
+            crate::runner::write_handoff_lease(&lease)
+                .map_err(|e| StoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
 
             for job in jobs.iter_mut() {
                 if job.id == id {

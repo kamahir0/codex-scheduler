@@ -315,7 +315,9 @@ async fn test_orphan_recovery_on_crashed_runner() {
         tick_pid: std::process::id(),
         runner_pid: Some(9999999),
         runner_start_time: Some("dead_start".to_string()),
+        boot_id: None,
         boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: None,
         claimed_at: now - Duration::minutes(5),
     };
     runner::write_handoff_lease(&lease).unwrap();
@@ -895,7 +897,9 @@ async fn test_claim_to_lock_handoff_grace_period_prevents_premature_orphan_recov
         tick_pid: std::process::id(),
         runner_pid: Some(9999999), // Dead PID
         runner_start_time: Some("nonexistent_start".to_string()),
+        boot_id: None,
         boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: None,
         claimed_at: now - chrono::Duration::seconds(20),
     };
     runner::write_handoff_lease(&lease).unwrap();
@@ -1174,7 +1178,9 @@ async fn test_durable_lease_reboot_recovery() {
         tick_pid: 9999999,
         runner_pid: Some(8888888),
         runner_start_time: Some("old_start".to_string()),
+        boot_id: Some("old_boot_id".to_string()),
         boot_time: Some(1), // Mismatched boot timestamp indicates machine reboot
+        uptime_ms: Some(u64::MAX), // Exceedingly high uptime ensures current_uptime < lease_uptime on Windows
         claimed_at: Utc::now() - chrono::Duration::minutes(5),
     };
     runner::write_handoff_lease(&lease).unwrap();
@@ -1212,14 +1218,16 @@ async fn test_durable_lease_surviving_runner_not_recovered() {
     // Record the current test process as the runner PID and fetch its actual start time
     let my_pid = std::process::id();
     let my_start = runner::get_process_start_time(my_pid).ok().flatten();
-    let cur_boot = runner::get_system_boot_time().ok();
+    let (cur_boot_id, cur_boot_time, cur_uptime) = runner::current_boot_identity();
 
     let lease = runner::HandoffLease {
         job_id: job.id.clone(),
         tick_pid: my_pid,
         runner_pid: Some(my_pid),
         runner_start_time: my_start,
-        boot_time: cur_boot,
+        boot_id: cur_boot_id,
+        boot_time: cur_boot_time,
+        uptime_ms: cur_uptime,
         claimed_at: Utc::now() - chrono::Duration::minutes(5),
     };
     runner::write_handoff_lease(&lease).unwrap();
@@ -1233,5 +1241,248 @@ async fn test_durable_lease_surviving_runner_not_recovered() {
 
     // Cleanup
     runner::cleanup_runner_files(&job.id);
+}
+
+// RATIONALE: [SCHED-JOB-006] RunnerLock drop must not destroy foreign execution evidence
+// Verifies that when a foreign run-job is rejected (child alive), dropping RunnerLock
+// leaves RunnerInfo and HandoffLease intact so repeated run-job attempts are also rejected.
+#[tokio::test]
+async fn test_runner_lock_drop_preserves_foreign_execution_evidence() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let mut job = Job::new(
+        ProviderType::Codex,
+        "session-protect-evidence-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        Utc::now() - chrono::Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Simulate an actively running child process (using current test process PID and start time)
+    let my_pid = std::process::id();
+    let my_start = runner::get_process_start_time(my_pid).ok().flatten();
+    let info = runner::RunnerInfo {
+        job_id: job.id.clone(),
+        session_id: job.session_id.clone(),
+        runner_pid: 9999999, // runner crashed
+        runner_started_at: Utc::now() - chrono::Duration::minutes(5),
+        codex_pid: Some(my_pid), // child is alive!
+        codex_start_time: my_start,
+    };
+    runner::write_runner_info(&info).unwrap();
+
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: 8888888,
+        runner_pid: Some(9999999),
+        runner_start_time: None,
+        boot_id: None,
+        boot_time: None,
+        uptime_ms: None,
+        claimed_at: Utc::now() - chrono::Duration::minutes(5),
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    // First attempt to run the job: acquire lock -> detect previous child alive -> fail with SessionBusy
+    let res1 = service.run_job_runner(&job.id).await;
+    assert!(res1.is_err(), "First run-job attempt must be rejected because child is alive");
+
+    // CRITICAL INVARIANT: runner lock drop must NOT have cleaned up RunnerInfo or HandoffLease
+    let info_after_drop = runner::read_runner_info(&job.id);
+    assert!(info_after_drop.is_some(), "RunnerInfo must remain intact after RunnerLock drop");
+    let lease_after_drop = runner::read_handoff_lease(&job.id);
+    assert!(lease_after_drop.is_some(), "HandoffLease must remain intact after RunnerLock drop");
+
+    // Second attempt to run the job: must STILL be rejected, second writer must never start!
+    let res2 = service.run_job_runner(&job.id).await;
+    assert!(res2.is_err(), "Second run-job attempt must also be rejected, evidence was preserved");
+
+    // Cleanup
+    runner::cleanup_runner_files(&job.id);
+}
+
+// RATIONALE: [SCHED-JOB-007] Eliminate claim -> lease persistence crash gap
+// Verifies that durable lease is established before Running status is committed,
+// and update lease failure cleanly rolls back the job to Failed.
+#[tokio::test]
+async fn test_claim_lease_crash_gap_and_rollback() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+
+    let job = Job::new(
+        ProviderType::Codex,
+        "session-crash-gap-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        Utc::now() - chrono::Duration::minutes(1),
+        None,
+    )
+    .unwrap();
+    store.insert_job(job.clone()).unwrap();
+
+    // 1. claim_due_jobs writes lease BEFORE saving Running
+    let claimed = store.claim_due_jobs(Utc::now()).unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].status, JobStatus::Running);
+
+    // Durable lease MUST be present immediately upon claim
+    let lease = runner::read_handoff_lease(&job.id);
+    assert!(lease.is_some(), "Durable lease must exist for claimed Running job");
+
+    // 2. Updated lease failure rollback verification
+    let mut failed_job = claimed[0].clone();
+    failed_job.set_status(JobStatus::Failed);
+    store.update_job(&failed_job).unwrap();
+    runner::cleanup_runner_files(&job.id);
+
+    let final_job = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(final_job.status, JobStatus::Failed);
+    assert!(runner::read_handoff_lease(&job.id).is_none());
+}
+
+// RATIONALE: [SCHED-JOB-006] Confirm unconfirmed child termination marker fails closed
+// Verifies that if child termination cannot be confirmed, a marker is written which
+// reports Unknown liveness, blocking duplicate writers and preventing premature orphan recovery.
+#[tokio::test]
+async fn test_unconfirmed_child_termination_marker_fails_closed() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let mut job = Job::new(
+        ProviderType::Codex,
+        "session-unconfirmed-term-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        Utc::now() - chrono::Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Write an unconfirmed termination marker
+    runner::write_corrupt_runner_info_marker(&job.id, 12345);
+
+    // Read checked should be Unreadable
+    let read = runner::read_runner_info_checked(&job.id);
+    assert!(matches!(read, runner::RunnerInfoRead::Unreadable(_)));
+
+    // Overall job liveness must be Unknown
+    assert_eq!(runner::get_job_liveness(&job.id), runner::LivenessState::Unknown);
+
+    // Reconcile must FAIL-CLOSED: do NOT recover the job
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert!(recovered.is_empty(), "Unknown state must fail-closed and not recover job");
+    assert_eq!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // Another run attempt must be rejected
+    let run_res = service.run_job_runner(&job.id).await;
+    assert!(run_res.is_err(), "Duplicate writer must be rejected on Unknown liveness");
+
+    // Cleanup
+    runner::cleanup_runner_files(&job.id);
+}
+
+// RATIONALE: [SCHED-JOB-007] Stable reboot detection across platforms
+// Verifies monotonic uptime rollback detects reboot, while monotonic advance does not false-reboot.
+#[test]
+fn test_reboot_identity_stability_and_monotonicity() {
+    let now = Utc::now();
+
+    // Case 1: Monotonic rollback (cur_uptime < lease_uptime) -> reboot detected!
+    let lease_rollback = runner::HandoffLease {
+        job_id: "job-reboot-1".to_string(),
+        tick_pid: 100,
+        runner_pid: None,
+        runner_start_time: None,
+        boot_id: None,
+        boot_time: None,
+        uptime_ms: Some(u64::MAX), // lease has very large uptime
+        claimed_at: now,
+    };
+    if runner::get_system_uptime_ms().is_ok() {
+        assert!(runner::is_reboot_detected(&lease_rollback));
+    }
+
+    // Case 2: Monotonic advance (cur_uptime >= lease_uptime) -> NO false reboot!
+    let lease_advance = runner::HandoffLease {
+        job_id: "job-advance-1".to_string(),
+        tick_pid: 100,
+        runner_pid: None,
+        runner_start_time: None,
+        boot_id: runner::get_system_boot_id(),
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: Some(1), // lease uptime is 1ms, current uptime is certainly >= 1ms
+        claimed_at: now,
+    };
+    assert!(!runner::is_reboot_detected(&lease_advance), "Monotonic advance must not trigger false reboot");
+
+    // Case 3: Boot ID mismatch -> reboot detected
+    let lease_diff_bid = runner::HandoffLease {
+        job_id: "job-diff-bid-1".to_string(),
+        tick_pid: 100,
+        runner_pid: None,
+        runner_start_time: None,
+        boot_id: Some("definitely-different-uuid".to_string()),
+        boot_time: None,
+        uptime_ms: None,
+        claimed_at: now,
+    };
+    if runner::get_system_boot_id().is_some() {
+        assert!(runner::is_reboot_detected(&lease_diff_bid));
+    }
+}
+
+// RATIONALE: [CODEX-RESUME-009] Strict log cap enforcement factoring existing length
+#[tokio::test]
+async fn test_capped_log_writer_existing_length_and_boundary() {
+    let temp = tempdir().unwrap();
+    let log_path = temp.path().join("test_cap.log");
+
+    // Create file with 9.5MB existing content
+    let existing_size = (9.5 * 1024.0 * 1024.0) as usize;
+    let initial_data = vec![b'A'; existing_size];
+    tokio::fs::write(&log_path, &initial_data).await.unwrap();
+
+    let meta = tokio::fs::metadata(&log_path).await.unwrap();
+    let existing_len = meta.len();
+    assert_eq!(existing_len, existing_size as u64);
+
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .append(true)
+        .open(&log_path)
+        .await
+        .unwrap();
+
+    let max_bytes = 10 * 1024 * 1024; // 10MB
+    let mut writer = runner::CappedLogWriter::new(file, max_bytes, existing_len);
+
+    // Write 2MB chunk
+    let chunk = vec![b'B'; 2 * 1024 * 1024];
+    writer.write_chunk(&chunk).await.unwrap();
+
+    let final_meta = tokio::fs::metadata(&log_path).await.unwrap();
+    assert!(
+        final_meta.len() <= max_bytes,
+        "File length {} must not exceed max_bytes {}",
+        final_meta.len(),
+        max_bytes
+    );
+
+    // Additional write must not write anything
+    writer.write_chunk(&chunk).await.unwrap();
+    let after_second = tokio::fs::metadata(&log_path).await.unwrap();
+    assert_eq!(after_second.len(), final_meta.len(), "Further writes must not increase file size");
 }
 

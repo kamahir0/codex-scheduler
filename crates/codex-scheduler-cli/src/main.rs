@@ -307,23 +307,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let is_active = codex_scheduler_core::runner::is_runner_active(&job.id);
-                        let runner_info = codex_scheduler_core::runner::read_runner_info(&job.id);
-                        let (codex_alive, liveness_state_str) = match runner_info {
-                            Some(ref info) => {
-                                let liveness = codex_scheduler_core::runner::check_codex_process_liveness(info);
-                                match liveness {
-                                    codex_scheduler_core::runner::LivenessState::RunnerActive => (true, "runner_active"),
-                                    codex_scheduler_core::runner::LivenessState::ChildActive => (true, "child_active"),
-                                    codex_scheduler_core::runner::LivenessState::Dead => (false, "unknown"),
-                                    codex_scheduler_core::runner::LivenessState::Unknown => (false, "unknown"),
+                        let runner_info_read = codex_scheduler_core::runner::read_runner_info_checked(&job.id);
+                        // RATIONALE: [CLI-CMD-003] Consistent observability matching core get_job_liveness
+                        // Prioritizes runner_active when RunnerLock is active, and reports child_active or unknown.
+                        let (codex_alive, liveness_state_str) = if is_active {
+                            let alive = match runner_info_read {
+                                codex_scheduler_core::runner::RunnerInfoRead::Present(ref info) => {
+                                    codex_scheduler_core::runner::check_codex_process_liveness(info) == codex_scheduler_core::runner::LivenessState::ChildActive
                                 }
-                            }
-                            None => {
-                                if is_active {
-                                    (false, "runner_active")
-                                } else {
-                                    (false, "unknown")
+                                _ => false,
+                            };
+                            (alive, "runner_active")
+                        } else {
+                            match runner_info_read {
+                                codex_scheduler_core::runner::RunnerInfoRead::Present(ref info) => {
+                                    let liveness = codex_scheduler_core::runner::check_codex_process_liveness(info);
+                                    match liveness {
+                                        codex_scheduler_core::runner::LivenessState::ChildActive => (true, "child_active"),
+                                        _ => (false, "unknown"),
+                                    }
                                 }
+                                _ => (false, "unknown"),
                             }
                         };
                         let active_execution = serde_json::json!({

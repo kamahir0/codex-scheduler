@@ -309,6 +309,17 @@ async fn test_orphan_recovery_on_crashed_runner() {
     orphan_job.updated_at = now - Duration::minutes(5);
     store.insert_job(orphan_job.clone()).unwrap();
 
+    // Durable lease recorded by spawning tick, but runner process crashed (PID 9999999 is dead)
+    let lease = runner::HandoffLease {
+        job_id: orphan_job.id.clone(),
+        tick_pid: std::process::id(),
+        runner_pid: Some(9999999),
+        runner_start_time: Some("dead_start".to_string()),
+        boot_time: runner::get_system_boot_time().ok(),
+        claimed_at: now - Duration::minutes(5),
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
     // Verify lock is NOT held (is_runner_active == false)
     assert!(!runner::is_runner_active(&orphan_job.id));
 
@@ -870,13 +881,30 @@ async fn test_claim_to_lock_handoff_grace_period_prevents_premature_orphan_recov
     assert_eq!(recovered.len(), 0, "Freshly claimed job must not be recovered during handoff grace period");
     assert_eq!(store.get_job(&fresh_job.id).unwrap().unwrap().status, JobStatus::Running);
 
-    // Once 20 seconds have passed without runner lock or info, it is a genuine orphan crash and must recover
+    // Fixed 15-second stale decision is abolished: elapsed time alone (20 seconds) must NOT recover the job
     fresh_job.updated_at = now - chrono::Duration::seconds(20);
     store.update_job(&fresh_job).unwrap();
 
     let recovered_after = service.reconcile_running_jobs().unwrap();
-    assert_eq!(recovered_after.len(), 1, "Orphan job exceeding grace period must be recovered");
-    assert_eq!(recovered_after[0].status, JobStatus::Failed);
+    assert_eq!(recovered_after.len(), 0, "Elapsed time alone without durable evidence must fail-closed and NOT recover job");
+    assert_eq!(store.get_job(&fresh_job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // With durable lease indicating terminated runner process (dead PID), it is definitively dead and must recover
+    let lease = runner::HandoffLease {
+        job_id: fresh_job.id.clone(),
+        tick_pid: std::process::id(),
+        runner_pid: Some(9999999), // Dead PID
+        runner_start_time: Some("nonexistent_start".to_string()),
+        boot_time: runner::get_system_boot_time().ok(),
+        claimed_at: now - chrono::Duration::seconds(20),
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    let recovered_with_lease = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered_with_lease.len(), 1, "Orphan job with durable dead runner evidence must be recovered");
+    assert_eq!(recovered_with_lease[0].status, JobStatus::Failed);
+
+    runner::cleanup_runner_files(&fresh_job.id);
 }
 
 #[tokio::test]
@@ -943,7 +971,7 @@ async fn test_strict_10mb_log_cap_with_large_output() {
         .await
         .unwrap();
 
-    let mut writer = runner::CappedLogWriter::new(file, runner::MAX_LOG_FILE_BYTES);
+    let mut writer = runner::CappedLogWriter::new(file, runner::MAX_LOG_FILE_BYTES, 0);
 
     // Simulate 15 MB of output in 64KB chunks
     let chunk = vec![b'A'; 64 * 1024];
@@ -966,5 +994,244 @@ async fn test_strict_10mb_log_cap_with_large_output() {
         runner::MAX_LOG_FILE_BYTES,
         "File size should match exactly the 10MB cap when output exceeds 15MB"
     );
+}
+
+#[tokio::test]
+async fn test_existing_log_file_strictly_capped_at_10mb() {
+    let temp = tempdir().unwrap();
+    let log_file_path = temp.path().join("attempt-existing.log");
+
+    // Pre-populate 9MB of existing content
+    let existing_9mb = vec![b'E'; 9 * 1024 * 1024];
+    std::fs::write(&log_file_path, &existing_9mb).unwrap();
+
+    let file = tokio::fs::OpenOptions::new()
+        .append(true)
+        .open(&log_file_path)
+        .await
+        .unwrap();
+
+    let existing_len = file.metadata().await.unwrap().len();
+    assert_eq!(existing_len, 9 * 1024 * 1024);
+
+    let mut writer = runner::CappedLogWriter::new(file, runner::MAX_LOG_FILE_BYTES, existing_len);
+
+    // Try to append 3MB of additional data
+    let chunk = vec![b'N'; 64 * 1024];
+    for _ in 0..48 {
+        writer.write_chunk(&chunk).await.unwrap();
+    }
+
+    let metadata = std::fs::metadata(&log_file_path).unwrap();
+    let actual_size = metadata.len();
+
+    assert!(
+        actual_size <= runner::MAX_LOG_FILE_BYTES,
+        "Existing 9MB file + 3MB write must NOT exceed 10MB cap (actual: {} bytes)",
+        actual_size
+    );
+    assert_eq!(
+        actual_size,
+        runner::MAX_LOG_FILE_BYTES,
+        "Existing 9MB file should cap strictly at 10MB"
+    );
+
+    // Now test with an already full 10MB file: must NOT increase by even 1 byte
+    let file_full = tokio::fs::OpenOptions::new()
+        .append(true)
+        .open(&log_file_path)
+        .await
+        .unwrap();
+    let full_len = file_full.metadata().await.unwrap().len();
+    assert_eq!(full_len, runner::MAX_LOG_FILE_BYTES);
+
+    let mut full_writer = runner::CappedLogWriter::new(file_full, runner::MAX_LOG_FILE_BYTES, full_len);
+    for _ in 0..10 {
+        full_writer.write_chunk(&chunk).await.unwrap();
+    }
+
+    let final_meta = std::fs::metadata(&log_file_path).unwrap();
+    assert_eq!(
+        final_meta.len(),
+        runner::MAX_LOG_FILE_BYTES,
+        "File already at 10MB cap must not increase by even 1 byte"
+    );
+}
+
+#[tokio::test]
+async fn test_manual_run_job_scheduled_job_succeeds() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    // Create a Scheduled job
+    let job = service
+        .schedule_job(
+            ProviderType::Codex,
+            "session-manual-run-1".to_string(),
+            temp.path().to_path_buf(),
+            Some("continue".to_string()),
+            Utc::now() + chrono::Duration::hours(1), // Future scheduled time
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(job.status, JobStatus::Scheduled);
+
+    // Call run_job_runner directly as CLI run-job would do
+    // This acquires RunnerLock and then calls claim_job_for_execution.
+    // Self-lock must be recognized and must NOT fail with SessionBusy.
+    let finished_job = service.run_job_runner(&job.id).await.unwrap();
+
+    // Verify job transitioned to terminal/retrying rather than failing with self-lock SessionBusy
+    let updated = store.get_job(&job.id).unwrap().unwrap();
+    assert_ne!(updated.status, JobStatus::Scheduled);
+    assert_eq!(finished_job.id, job.id);
+}
+
+#[tokio::test]
+async fn test_corrupt_runner_info_fails_closed_without_recovering() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let mut job = Job::new(
+        ProviderType::Codex,
+        "session-corrupt-info-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        Utc::now() - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Write a corrupt runner info file
+    let info_path = runner::runner_info_path(&job.id).unwrap();
+    std::fs::write(&info_path, b"{ this is corrupt json \n").unwrap();
+
+    // 1. Verify read_runner_info_checked returns Unreadable
+    let read_result = runner::read_runner_info_checked(&job.id);
+    assert!(matches!(read_result, runner::RunnerInfoRead::Unreadable(_)));
+
+    // 2. Verify get_job_liveness returns Unknown
+    assert_eq!(runner::get_job_liveness(&job.id), runner::LivenessState::Unknown);
+
+    // 3. Reconcile running jobs must fail-closed: do NOT recover
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert!(recovered.is_empty(), "Corrupt runner info must fail-closed and NOT recover job");
+
+    let current_job = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(current_job.status, JobStatus::Running);
+
+    // 4. Second writer attempt for the same session must be blocked
+    let second_job = Job::new(
+        ProviderType::Codex,
+        "session-corrupt-info-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        Utc::now(),
+        None,
+    )
+    .unwrap();
+    store.insert_job(second_job.clone()).unwrap();
+
+    let claim_res = store.claim_job_for_execution(&second_job.id);
+    assert!(
+        claim_res.is_err(),
+        "Claiming second job for the same session must be blocked when liveness is Unknown"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_file(info_path);
+}
+
+#[tokio::test]
+async fn test_durable_lease_reboot_recovery() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let mut job = Job::new(
+        ProviderType::Codex,
+        "session-reboot-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        Utc::now() - chrono::Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Write a durable lease with an artificial past boot_time (e.g. 1) that will mismatch current boot_time
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: 9999999,
+        runner_pid: Some(8888888),
+        runner_start_time: Some("old_start".to_string()),
+        boot_time: Some(1), // Mismatched boot timestamp indicates machine reboot
+        claimed_at: Utc::now() - chrono::Duration::minutes(5),
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    // Reconcile should detect reboot and recover the job
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 1, "Reboot detection should recover orphan Running job");
+
+    let updated = store.get_job(&job.id).unwrap().unwrap();
+    assert_ne!(updated.status, JobStatus::Running);
+
+    // Cleanup
+    runner::cleanup_runner_files(&job.id);
+}
+
+#[tokio::test]
+async fn test_durable_lease_surviving_runner_not_recovered() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let mut job = Job::new(
+        ProviderType::Codex,
+        "session-surviving-runner-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        Utc::now() - chrono::Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Record the current test process as the runner PID and fetch its actual start time
+    let my_pid = std::process::id();
+    let my_start = runner::get_process_start_time(my_pid).ok().flatten();
+    let cur_boot = runner::get_system_boot_time().ok();
+
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: my_pid,
+        runner_pid: Some(my_pid),
+        runner_start_time: my_start,
+        boot_time: cur_boot,
+        claimed_at: Utc::now() - chrono::Duration::minutes(5),
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    // Reconcile should see the runner process is actively running and NOT recover it
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert!(recovered.is_empty(), "Surviving runner must NOT be recovered even if lock not held");
+
+    let current = store.get_job(&job.id).unwrap().unwrap();
+    assert_eq!(current.status, JobStatus::Running);
+
+    // Cleanup
+    runner::cleanup_runner_files(&job.id);
 }
 

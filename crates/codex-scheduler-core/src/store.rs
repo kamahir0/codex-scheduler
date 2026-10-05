@@ -210,10 +210,9 @@ impl JobStore {
         })
     }
 
-    // RATIONALE: [OS-SCHED-003] Prevent concurrent duplicate writers across all execution entry points
-    // Ensures neither the target job nor any other job with the same session_id is Running or active.
-    /// Atomically claims a single job for execution, ensuring neither it nor any other job
-    /// with the same session_id is currently Running or actively executing.
+    // RATIONALE: [CLI-CMD-002, OS-SCHED-003] Prevent concurrent duplicate writers while allowing self-locked manual run
+    // Checks other jobs for session conflicts. For the target job itself, verifies stale child process
+    // is dead and permits lock held by current process (manual run-job invocation) while rejecting other lockers.
     pub fn claim_job_for_execution(&self, id: &str) -> Result<Job, StoreError> {
         self.with_lock(|| {
             let mut jobs = self.load_all()?;
@@ -228,14 +227,35 @@ impl JobStore {
                 target.session_id.clone()
             };
 
+            // Check other jobs with the same session_id
             for job in jobs.iter() {
-                if job.session_id == target_session_id {
+                if job.id != id && job.session_id == target_session_id {
                     if job.status == crate::models::JobStatus::Running {
                         return Err(StoreError::SessionBusy(target_session_id));
                     }
                     if crate::runner::get_job_liveness(&job.id) != crate::runner::LivenessState::Dead {
                         return Err(StoreError::SessionBusy(target_session_id));
                     }
+                }
+            }
+
+            // Check target job itself for stale/unknown child process
+            match crate::runner::read_runner_info_checked(id) {
+                crate::runner::RunnerInfoRead::Present(info) => {
+                    if crate::runner::check_codex_process_liveness(&info) != crate::runner::LivenessState::Dead {
+                        return Err(StoreError::SessionBusy(target_session_id));
+                    }
+                }
+                crate::runner::RunnerInfoRead::Unreadable(_) => {
+                    return Err(StoreError::SessionBusy(target_session_id));
+                }
+                crate::runner::RunnerInfoRead::Missing => {}
+            }
+
+            // Check if RunnerLock is held by another process
+            if crate::runner::is_runner_active(id) {
+                if !crate::runner::is_runner_lock_held_by_current_process(id) {
+                    return Err(StoreError::SessionBusy(target_session_id));
                 }
             }
 

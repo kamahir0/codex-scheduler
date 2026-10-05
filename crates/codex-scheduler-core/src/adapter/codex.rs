@@ -104,10 +104,18 @@ impl CodexAdapter {
                 codex_pid: Some(c_pid),
                 codex_start_time: start_time,
             };
-            let _ = crate::runner::write_runner_info(&info);
+            if let Err(e) = crate::runner::write_runner_info(&info) {
+                // RATIONALE: [SCHED-JOB-006] Fail-closed runner info persistence
+                // Terminate spawned child process immediately to prevent leaving untracked survivors.
+                let _ = child.start_kill();
+                return Err(AdapterError::ProcessError(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to persist runner metadata for job {}: {}", jid, e),
+                )));
+            }
         }
 
-        // RATIONALE: [CODEX-RESUME-009] Best-effort log file initialization with graceful fallback
+        // RATIONALE: [CODEX-RESUME-009] Best-effort log file initialization factoring existing file length
         // If the log directory or file cannot be opened, execution proceeds with bounded in-memory log.
         let log_writer = if let Some(path) = log_path {
             if let Some(parent) = path.parent() {
@@ -119,9 +127,12 @@ impl CodexAdapter {
                 .open(path)
                 .await
             {
-                Ok(file) => Some(std::sync::Arc::new(tokio::sync::Mutex::new(
-                    crate::runner::CappedLogWriter::new(file, crate::runner::MAX_LOG_FILE_BYTES),
-                ))),
+                Ok(file) => {
+                    let existing_len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+                    Some(std::sync::Arc::new(tokio::sync::Mutex::new(
+                        crate::runner::CappedLogWriter::new(file, crate::runner::MAX_LOG_FILE_BYTES, existing_len),
+                    )))
+                }
                 Err(_) => None,
             }
         } else {

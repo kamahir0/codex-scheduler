@@ -291,37 +291,136 @@ impl SchedulerService {
         Ok(self.store.delete_job(job_id)?)
     }
 
-    // RATIONALE: [SCHED-JOB-007] Automatic orphan job recovery during periodic scheduler tick
-    // Scans jobs currently marked Running and checks whether an exclusive runner lock is held.
-    // Respects handoff grace period to prevent race conditions during detached runner startup.
-    // If no runner lock is held, verifies whether the recorded Codex child process is still alive.
-    // If child process is still running or liveness is Unknown, maintains Running to prevent concurrent duplicate writers.
-    // Only recovers to Failed or Retrying if child process is definitively Dead.
+    // RATIONALE: [SCHED-JOB-007] Automatic orphan job recovery based on durable evidence
+    // Scans jobs currently marked Running and checks durable lease, kernel lock, and child process liveness.
+    // Fixed time-based timeout is completely abolished. Recovery requires durable proof of termination:
+    // 1. System reboot detected (boot timestamp mismatch) -> all previous processes terminated -> Dead.
+    // 2. Runner lock is released and recorded runner PID does not exist on OS -> runner terminated.
+    // 3. Child process is definitively Dead -> recover job to Retrying / Failed.
+    // If child is alive or liveness is Unknown, maintains Running to prevent concurrent duplicate writers.
     pub fn reconcile_running_jobs(&self) -> Result<Vec<Job>, CoreError> {
         Ok(self.store.with_lock(|| {
             let mut jobs = self.store.load_all()?;
             let mut recovered = Vec::new();
             let now = Utc::now();
+            let current_boot_time = runner::get_system_boot_time().ok();
 
             for job in jobs.iter_mut() {
                 if job.status == JobStatus::Running && !runner::is_runner_active(&job.id) {
-                    // Check handoff grace period: if claimed very recently (< 15 seconds) and no runner info yet,
-                    // the runner process may still be in the middle of spawning. Do not prematurely recover.
-                    let info_opt = runner::read_runner_info(&job.id);
-                    if info_opt.is_none() {
-                        let elapsed = now.signed_duration_since(job.updated_at);
-                        if elapsed < chrono::Duration::seconds(15) {
+                    // Check handoff grace period (15s): defer recovery while processes may be starting up
+                    let elapsed = now.signed_duration_since(job.updated_at);
+                    let in_grace_period = elapsed < chrono::Duration::seconds(15);
+
+                    // Check durable handoff lease
+                    let lease_read = runner::read_handoff_lease_checked(&job.id);
+                    let mut reboot_detected = false;
+                    let mut runner_confirmed_dead = false;
+
+                    match lease_read {
+                        runner::HandoffLeaseRead::Present(ref lease) => {
+                            if let (Some(cur_boot), Some(lease_boot)) = (current_boot_time, lease.boot_time) {
+                                if cur_boot != lease_boot {
+                                    reboot_detected = true;
+                                }
+                            }
+
+                            if !reboot_detected {
+                                // Check if detached runner process is still alive / starting up
+                                if let Some(r_pid) = lease.runner_pid {
+                                    match runner::get_process_start_time(r_pid) {
+                                        Ok(Some(actual_start)) => {
+                                            let matches = match lease.runner_start_time.as_deref() {
+                                                Some(expected) => expected == actual_start,
+                                                None => true,
+                                            };
+                                            if matches {
+                                                // Detached runner process is actively running / starting up.
+                                                // Do NOT recover regardless of elapsed time.
+                                                continue;
+                                            } else {
+                                                runner_confirmed_dead = true;
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            // Runner process has terminated.
+                                            runner_confirmed_dead = true;
+                                        }
+                                        Err(()) => {
+                                            // Process inspection failed. Fail-closed: do NOT recover.
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    // Runner PID not yet recorded. Check if spawning tick is still alive.
+                                    match runner::get_process_start_time(lease.tick_pid) {
+                                        Ok(Some(_)) => {
+                                            // Spawning tick is actively running. Do NOT recover.
+                                            continue;
+                                        }
+                                        Ok(None) => {
+                                            // Spawning tick died before recording runner PID.
+                                            runner_confirmed_dead = true;
+                                        }
+                                        Err(()) => {
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        runner::HandoffLeaseRead::Unreadable(_) => {
+                            // Corrupt lease: fail-closed, maintain Running.
                             continue;
+                        }
+                        runner::HandoffLeaseRead::Missing => {
+                            // No lease found.
                         }
                     }
 
-                    // Check if Codex child process is alive or unknown despite lost runner lock
-                    if let Some(ref info) = info_opt {
-                        let liveness = runner::check_codex_process_liveness(info);
-                        if liveness != runner::LivenessState::Dead {
-                            // Child is actively running or liveness observation failed (Unknown).
-                            // Fail-closed: maintain Running to prevent concurrent duplicate writers.
-                            continue;
+                    // If reboot was not detected, inspect recorded Codex child process
+                    if !reboot_detected {
+                        let info_read = runner::read_runner_info_checked(&job.id);
+                        match info_read {
+                            runner::RunnerInfoRead::Present(ref info) => {
+                                // If runner PID was not confirmed dead via lease, check info.runner_pid
+                                if !runner_confirmed_dead {
+                                    match runner::get_process_start_time(info.runner_pid) {
+                                        Ok(Some(_)) => {
+                                            // Runner process is still alive on OS! Do NOT recover.
+                                            continue;
+                                        }
+                                        Ok(None) => {
+                                            runner_confirmed_dead = true;
+                                        }
+                                        Err(()) => {
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                let liveness = runner::check_codex_process_liveness(info);
+                                if liveness != runner::LivenessState::Dead {
+                                    // Child is actively running or liveness observation failed (Unknown).
+                                    // Fail-closed: maintain Running to prevent concurrent duplicate writers.
+                                    continue;
+                                }
+                            }
+                            runner::RunnerInfoRead::Unreadable(_) => {
+                                // Metadata read failed or corrupt: Fail-closed, maintain Running.
+                                continue;
+                            }
+                            runner::RunnerInfoRead::Missing => {
+                                // In the absence of runner info, we are in the handoff/startup phase.
+                                // Defer recovery during grace period while processes may still be initializing.
+                                if in_grace_period {
+                                    continue;
+                                }
+                                // If runner was not confirmed dead via durable evidence (lease),
+                                // we cannot guess it is dead solely by elapsed time. Fail-closed.
+                                if !runner_confirmed_dead {
+                                    continue;
+                                }
+                            }
                         }
                     }
 
@@ -383,11 +482,36 @@ impl SchedulerService {
         let mut spawned = Vec::new();
         if let Some(ref exe) = self.exe_path {
             if exe.is_file() {
+                let boot_time = runner::get_system_boot_time().ok();
                 for job in due_jobs {
+                    // Record initial lease before spawning
+                    let lease = runner::HandoffLease {
+                        job_id: job.id.clone(),
+                        tick_pid: std::process::id(),
+                        runner_pid: None,
+                        runner_start_time: None,
+                        boot_time,
+                        claimed_at: Utc::now(),
+                    };
+                    let _ = runner::write_handoff_lease(&lease);
+
                     match runner::spawn_detached_runner(exe, &job.id, self.is_desktop) {
-                        Ok(()) => spawned.push(job),
+                        Ok(runner_pid) => {
+                            let runner_start = runner::get_process_start_time(runner_pid).ok().flatten();
+                            let updated_lease = runner::HandoffLease {
+                                job_id: job.id.clone(),
+                                tick_pid: std::process::id(),
+                                runner_pid: Some(runner_pid),
+                                runner_start_time: runner_start,
+                                boot_time,
+                                claimed_at: Utc::now(),
+                            };
+                            let _ = runner::write_handoff_lease(&updated_lease);
+                            spawned.push(job);
+                        }
                         Err(e) => {
                             eprintln!("[Tick] Failed to spawn runner for job {}: {}", job.id, e);
+                            runner::cleanup_runner_files(&job.id);
                             let mut failed_job = job;
                             failed_job.set_status(JobStatus::Failed);
                             let _ = self.store.update_job(&failed_job);
@@ -432,13 +556,21 @@ impl SchedulerService {
     pub async fn run_job_runner(&self, job_id: &str) -> Result<Job, CoreError> {
         let _lock = runner::RunnerLock::acquire(job_id)?;
 
-        // RATIONALE: [SCHED-JOB-006] Prevent second writer if previous Codex child is still alive
-        if let Some(info) = runner::read_runner_info(job_id) {
-            if runner::check_codex_process_liveness(&info) != runner::LivenessState::Dead {
+        // RATIONALE: [SCHED-JOB-006] Prevent second writer if previous Codex child is still alive or metadata unreadable
+        match runner::read_runner_info_checked(job_id) {
+            runner::RunnerInfoRead::Present(info) => {
+                if runner::check_codex_process_liveness(&info) != runner::LivenessState::Dead {
+                    return Err(CoreError::SessionBusy(
+                        format!("Previous Codex child process is still alive for job {}", job_id),
+                    ));
+                }
+            }
+            runner::RunnerInfoRead::Unreadable(e) => {
                 return Err(CoreError::SessionBusy(
-                    format!("Previous Codex child process is still alive for job {}", job_id),
+                    format!("Previous runner metadata unreadable/corrupt for job {}: {}", job_id, e),
                 ));
             }
+            runner::RunnerInfoRead::Missing => {}
         }
 
         let mut job = self

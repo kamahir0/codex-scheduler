@@ -20,7 +20,7 @@ pub enum RunnerError {
     ExecutableNotFound,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RunnerInfo {
     pub job_id: String,
     pub session_id: String,
@@ -28,6 +28,23 @@ pub struct RunnerInfo {
     pub runner_started_at: chrono::DateTime<chrono::Utc>,
     pub codex_pid: Option<u32>,
     pub codex_start_time: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HandoffLease {
+    pub job_id: String,
+    pub tick_pid: u32,
+    pub runner_pid: Option<u32>,
+    pub runner_start_time: Option<String>,
+    pub boot_time: Option<u64>,
+    pub claimed_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum RunnerInfoRead {
+    Present(RunnerInfo),
+    Missing,
+    Unreadable(String),
 }
 
 /// Returns the base directory for runner locks: `~/.codex-scheduler/runners`
@@ -52,21 +69,94 @@ pub fn runner_info_path(job_id: &str) -> Result<PathBuf, RunnerError> {
     Ok(dir.join(format!("{}.json", job_id)))
 }
 
+/// Returns the handoff lease path for a given job: `~/.codex-scheduler/runners/<job_id>.lease`
+pub fn runner_lease_path(job_id: &str) -> Result<PathBuf, RunnerError> {
+    let dir = runner_lock_dir()?;
+    Ok(dir.join(format!("{}.lease", job_id)))
+}
+
+// RATIONALE: [SCHED-JOB-006] Atomic persistence of runner metadata via temp-file and rename
+// Prevents exposing corrupt or partially written JSON during process interruption or crash.
 pub fn write_runner_info(info: &RunnerInfo) -> Result<(), RunnerError> {
-    let path = runner_info_path(&info.job_id)?;
+    let dir = runner_lock_dir()?;
+    let path = dir.join(format!("{}.json", info.job_id));
+    let tmp_path = dir.join(format!("{}.json.tmp.{}", info.job_id, std::process::id()));
     let content = serde_json::to_string_pretty(info)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    fs::write(path, content)?;
+    fs::write(&tmp_path, content)?;
+    fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
-pub fn read_runner_info(job_id: &str) -> Option<RunnerInfo> {
-    let path = runner_info_path(job_id).ok()?;
+// RATIONALE: [SCHED-JOB-006] Tri-state runner info reading to fail-closed on corrupt metadata
+// Distinguishes Missing (clean not started/cleaned) from Unreadable (parse error/IO error).
+pub fn read_runner_info_checked(job_id: &str) -> RunnerInfoRead {
+    let path = match runner_info_path(job_id) {
+        Ok(p) => p,
+        Err(e) => return RunnerInfoRead::Unreadable(e.to_string()),
+    };
     if !path.exists() {
-        return None;
+        return RunnerInfoRead::Missing;
     }
-    let content = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => return RunnerInfoRead::Unreadable(e.to_string()),
+    };
+    match serde_json::from_str(&content) {
+        Ok(info) => RunnerInfoRead::Present(info),
+        Err(e) => RunnerInfoRead::Unreadable(e.to_string()),
+    }
+}
+
+pub fn read_runner_info(job_id: &str) -> Option<RunnerInfo> {
+    match read_runner_info_checked(job_id) {
+        RunnerInfoRead::Present(info) => Some(info),
+        _ => None,
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum HandoffLeaseRead {
+    Present(HandoffLease),
+    Missing,
+    Unreadable(String),
+}
+
+// RATIONALE: [SCHED-JOB-007] Durable handoff lease persistence
+pub fn write_handoff_lease(lease: &HandoffLease) -> Result<(), RunnerError> {
+    let dir = runner_lock_dir()?;
+    let path = dir.join(format!("{}.lease", lease.job_id));
+    let tmp_path = dir.join(format!("{}.lease.tmp.{}", lease.job_id, std::process::id()));
+    let content = serde_json::to_string_pretty(lease)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fs::write(&tmp_path, content)?;
+    fs::rename(&tmp_path, &path)?;
+    Ok(())
+}
+
+pub fn read_handoff_lease_checked(job_id: &str) -> HandoffLeaseRead {
+    let path = match runner_lease_path(job_id) {
+        Ok(p) => p,
+        Err(e) => return HandoffLeaseRead::Unreadable(e.to_string()),
+    };
+    if !path.exists() {
+        return HandoffLeaseRead::Missing;
+    }
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => return HandoffLeaseRead::Unreadable(e.to_string()),
+    };
+    match serde_json::from_str(&content) {
+        Ok(lease) => HandoffLeaseRead::Present(lease),
+        Err(e) => HandoffLeaseRead::Unreadable(e.to_string()),
+    }
+}
+
+pub fn read_handoff_lease(job_id: &str) -> Option<HandoffLease> {
+    match read_handoff_lease_checked(job_id) {
+        HandoffLeaseRead::Present(lease) => Some(lease),
+        _ => None,
+    }
 }
 
 pub fn cleanup_runner_files(job_id: &str) {
@@ -75,6 +165,9 @@ pub fn cleanup_runner_files(job_id: &str) {
     }
     if let Ok(info_path) = runner_info_path(job_id) {
         let _ = fs::remove_file(info_path);
+    }
+    if let Ok(lease_path) = runner_lease_path(job_id) {
+        let _ = fs::remove_file(lease_path);
     }
 }
 
@@ -102,6 +195,56 @@ pub fn runner_log_dir(job_id: &str) -> Result<PathBuf, RunnerError> {
 pub fn runner_log_path(job_id: &str, attempt_number: u32) -> Result<PathBuf, RunnerError> {
     let dir = runner_log_dir(job_id)?;
     Ok(dir.join(format!("attempt-{}.log", attempt_number)))
+}
+
+// RATIONALE: [SCHED-JOB-007] System boot time detection for durable reboot recovery
+// Enables detecting machine reboots definitively, ensuring all prior processes are dead.
+#[cfg(target_os = "macos")]
+pub fn get_system_boot_time() -> Result<u64, ()> {
+    let output = std::process::Command::new("sysctl")
+        .arg("-n")
+        .arg("kern.boottime")
+        .output()
+        .map_err(|_| ())?;
+    if !output.status.success() {
+        return Err(());
+    }
+    let s = String::from_utf8_lossy(&output.stdout);
+    if let Some(pos) = s.find("sec = ") {
+        let after = &s[pos + 6..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        num_str.parse::<u64>().map_err(|_| ())
+    } else {
+        Err(())
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn get_system_boot_time() -> Result<u64, ()> {
+    if let Ok(content) = std::fs::read_to_string("/proc/stat") {
+        for line in content.lines() {
+            if line.starts_with("btime ") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(t) = parts[1].parse::<u64>() {
+                        return Ok(t);
+                    }
+                }
+            }
+        }
+    }
+    Err(())
+}
+
+#[cfg(windows)]
+pub fn get_system_boot_time() -> Result<u64, ()> {
+    use windows::Win32::System::SystemInformation::GetTickCount64;
+    unsafe {
+        let uptime_ms = GetTickCount64();
+        let uptime_secs = uptime_ms / 1000;
+        let now_secs = chrono::Utc::now().timestamp().max(0) as u64;
+        Ok(now_secs.saturating_sub(uptime_secs))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -174,6 +317,33 @@ pub fn get_process_start_time(pid: u32) -> Result<Option<String>, ()> {
 // Relying only on PID checks is prone to PID wrap-around errors or stale processes.
 // An OS-level exclusive file lock (flock / LockFileEx via fs2) is automatically released
 // by the kernel if the process terminates, crashes, or the machine reboots.
+static CURRENT_PROCESS_RUNNER_LOCKS: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+
+fn record_current_process_lock(job_id: &str) {
+    if let Ok(mut guard) = CURRENT_PROCESS_RUNNER_LOCKS.lock() {
+        guard.get_or_insert_with(std::collections::HashSet::new).insert(job_id.to_string());
+    }
+}
+
+fn remove_current_process_lock(job_id: &str) {
+    if let Ok(mut guard) = CURRENT_PROCESS_RUNNER_LOCKS.lock() {
+        if let Some(ref mut set) = *guard {
+            set.remove(job_id);
+        }
+    }
+}
+
+/// Checks whether the runner lock for a given job is actively held by the current process.
+pub fn is_runner_lock_held_by_current_process(job_id: &str) -> bool {
+    if let Ok(guard) = CURRENT_PROCESS_RUNNER_LOCKS.lock() {
+        if guard.as_ref().map(|set| set.contains(job_id)).unwrap_or(false) {
+            return true;
+        }
+    }
+    // Fallback check against persisted lock file metadata
+    get_runner_lock_holder(job_id) == Some(std::process::id())
+}
+
 /// Represents an acquired exclusive lock for a running job runner.
 pub struct RunnerLock {
     file: File,
@@ -206,6 +376,8 @@ impl RunnerLock {
         let _ = writeln!(f_clone, "{}", meta);
         let _ = f_clone.flush();
 
+        record_current_process_lock(job_id);
+
         Ok(Self { file, path, job_id: job_id.to_string() })
     }
 
@@ -216,6 +388,7 @@ impl RunnerLock {
 
 impl Drop for RunnerLock {
     fn drop(&mut self) {
+        remove_current_process_lock(&self.job_id);
         let _ = self.file.unlock();
         cleanup_runner_files(&self.job_id);
     }
@@ -275,19 +448,33 @@ pub fn is_runner_active(job_id: &str) -> bool {
     }
 }
 
+// RATIONALE: [CLI-CMD-002, OS-SCHED-003] Identify runner lock holder to distinguish self-lock from conflict
+// Reads written lock metadata to safely detect if the current process holds the lock.
+pub fn get_runner_lock_holder(job_id: &str) -> Option<u32> {
+    let path = runner_lock_path(job_id).ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(path).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&content).ok()?;
+    val.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32)
+}
+
 /// Evaluates comprehensive execution liveness for a job across Runner lock and Codex child process.
 pub fn get_job_liveness(job_id: &str) -> LivenessState {
     if is_runner_active(job_id) {
         return LivenessState::RunnerActive;
     }
-    match read_runner_info(job_id) {
-        Some(info) => check_codex_process_liveness(&info),
-        None => LivenessState::Dead,
+    match read_runner_info_checked(job_id) {
+        RunnerInfoRead::Present(info) => check_codex_process_liveness(&info),
+        RunnerInfoRead::Unreadable(_) => LivenessState::Unknown,
+        RunnerInfoRead::Missing => LivenessState::Dead,
     }
 }
 
-// RATIONALE: [CODEX-RESUME-009] Strict 10MB capped log persistence
-// Ensures disk log files never exceed MAX_LOG_FILE_BYTES (10MB) combined across stdout and stderr.
+// RATIONALE: [CODEX-RESUME-009] Strict 10MB capped log persistence factoring existing file length
+// Ensures disk log files never exceed MAX_LOG_FILE_BYTES (10MB) combined across stdout and stderr,
+// even when appending to an existing log file.
 pub struct CappedLogWriter {
     file: tokio::fs::File,
     written_bytes: u64,
@@ -295,10 +482,11 @@ pub struct CappedLogWriter {
 }
 
 impl CappedLogWriter {
-    pub fn new(file: tokio::fs::File, max_bytes: u64) -> Self {
+    pub fn new(file: tokio::fs::File, max_bytes: u64, existing_len: u64) -> Self {
+        let written_bytes = existing_len.min(max_bytes);
         Self {
             file,
-            written_bytes: 0,
+            written_bytes,
             max_bytes,
         }
     }
@@ -368,7 +556,7 @@ pub fn spawn_detached_runner(
     exe_path: &Path,
     job_id: &str,
     is_desktop: bool,
-) -> Result<(), RunnerError> {
+) -> Result<u32, RunnerError> {
     let mut cmd = std::process::Command::new(exe_path);
 
     if is_desktop {
@@ -395,8 +583,8 @@ pub fn spawn_detached_runner(
         cmd.process_group(0);
     }
 
-    cmd.spawn()?;
-    Ok(())
+    let child = cmd.spawn()?;
+    Ok(child.id())
 }
 
 #[cfg(test)]

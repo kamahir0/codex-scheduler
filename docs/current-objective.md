@@ -20,6 +20,7 @@ Schedulerによってquota解除後などにCodex sessionを`continue`で再開�
 
 ## Canonical authority
 
+- ジョブライフサイクル仕様: [`docs/specs/job-lifecycle.md`](docs/specs/job-lifecycle.md)
 - Codex Adapter仕様: [`docs/specs/codex-adapter.md`](docs/specs/codex-adapter.md)
 - OS Scheduler仕様: [`docs/specs/os-scheduler.md`](docs/specs/os-scheduler.md)
 - Retry Policy仕様: [`docs/specs/retry-policy.md`](docs/specs/retry-policy.md)
@@ -38,5 +39,5 @@ Schedulerによってquota解除後などにCodex sessionを`continue`で再開�
 - 実行中jobプロセスの強制終了（cancel semantics拡張）。
 
 ## Status
-
-Complete.
+ 
+In progress.

@@ -94,6 +94,7 @@ Windows環境において、バックグラウンド定期実行を担保する�
    - 60秒間隔の定期 tick が前回の完了前に重なった場合や、複数プロセスが同時に起動した場合でも、同一ジョブが二重実行されてはならない（MUST NOT）。
    - コアのジョブストアは、待機中ジョブ（`Scheduled` または `Retrying`）の抽出とステータスから `Running` への更新をアトミックに排他制御しなければならない（MUST）。
    - 定期 tick（`claim_due_jobs`）だけでなく、手動即時実行（GUI run-now、手動 `execute_job`、CLI `run-job`）を含むすべての実行エントリポイントにおいて、同一の `session_id` を持つ別のジョブが既に `Running` 状態であるか、またはアクティブな実行（RunnerLock 保持または Codex 子プロセスが生存中）を保持している場合、新規実行のクレームをアトミックに拒絶・保留し、同一Codexセッションに対する二重writer競合を100%防止しなければならない（MUST）。
+   - 手動実行時（`run_job_runner`）、ターゲットジョブ自身が自プロセスによって既にロックされている場合は自己競合と誤認して拒絶してはならない（MUST NOT）。ただし、ターゲットジョブ自身に対して過去の Codex 子プロセスが生存または Unknown である場合は、二重 writer 防止のため拒絶しなければならない（MUST）。
 3. **実行セマンティクスの共有**:
    - Desktop所有時（`codex-scheduler-gui --run-job <job_id>`）およびCLI所有時（`codex-scheduler run-job <job_id>`）のいずれにおいても、Runnerプロセスでのジョブ実行、リトライ判定、履歴保存は、完全に同一の `codex-scheduler-core` ロジックを使用しなければならない（MUST）。ロジックを GUI や CLI 側へ個別に複製してはならない（MUST NOT）。
 

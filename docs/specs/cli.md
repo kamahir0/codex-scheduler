@@ -43,7 +43,7 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
 5. **`delete <job-id>`**: ジョブの削除
 6. **`status`**: システム・スケジューラ・所有権情報の表示
 7. **`tick`（または `--scheduler-tick`）**: 期限到来ジョブの抽出・Runnerプロセス起動（内部スケジューラ・テスト用）
-8. **`run-job <job-id>`**: 指定ジョブを独立Runnerプロセスとして実行（内部スケジューラ呼出および手動デバッグ実行用）
+8. **`run-job <job-id>`**: 指定ジョブを独立Runnerプロセスとして実行（内部スケジューラ呼出および待機中・リトライ中ジョブの手動デバッグ実行用）
 9. **`install-scheduler`**: OSスケジューラの常設登録（CLI 所有として登録・修復）
 10. **`uninstall-scheduler`**: OSスケジューラの登録解除（所有権配慮型）
 
@@ -75,7 +75,7 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
    - ジョブステータスが `Running` の場合、以下の `active_execution` オブジェクトをトップレベルに付与しなければならない（MUST）：
      - `is_runner_active`: bool（Runnerプロセスの排他ロックが保持されているか）
      - `codex_process_alive`: bool（Codex子プロセスがOS上で生存しているか）
-     - `liveness_state`: string（実行生存状態: `"runner_active" | "child_active" | "unknown"`）
+     - `liveness_state`: string（実行生存状態: RunnerLock保持時は `"runner_active"`、非保持かつCodex子プロセス生存時は `"child_active"`、それ以外は `"unknown"`。`codex-scheduler-core` の生存性判定と一貫）
      - `attempt_number`: u32（現在実行中の試行番号）
      - `log_path`: string（ディスク上の試行ログファイル絶対パス）
      - `latest_output`: string（ディスクログから抽出された直近の bounded tail 文字列）

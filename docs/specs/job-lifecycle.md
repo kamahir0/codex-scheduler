@@ -77,28 +77,34 @@ Domain: SCHED
 2. ステータスが `Running` であるジョブ、または RunnerLock や Codex 子プロセスが生存中（Liveness が `Dead` 以外）であるジョブに対して、キャンセル（`cancel`）および削除（`delete`）を試みた場合、操作を拒絶しエラーを返さなければならない（MUST NOT permit; MUST return error）。これにより、実行中ジョブのセッション排他 guard が消失して同一セッションへの second writer が起動されることを 100% 抑止しなければならない（MUST）。
 3. ジョブの削除は、非実行中（`scheduled`, `retrying`, `succeeded`, `failed`, `cancelled` であり、かつ active な Runner または Codex 子プロセスが存在しない場合）にのみ許可され、ストアから除去するとともにログおよびメタデータをクリーンアップしなければならない（MUST）。
 
-### SCHED-JOB-006: 長時間ジョブ実行ランナーと生存性（Liveness）保証
+### SCHED-JOB-006: 長時間ジョブ実行ランナー・メタデータ健全性および生存性（Liveness）保証
 
 1. **Runner プロセス分離**:
    - ジョブの実行（Codex CLIの呼び出し、監視、ログ記録、結果確定）は、短時間のスケジューラtickプロセスとは分離された独立のRunnerプロセスによって行われなければならない（MUST）。
-2. **OSレベル排他ロックと子プロセス実行メタデータの記録**:
+2. **OSレベル排他ロックと子プロセス実行メタデータのアトミックな記録**:
    - Runnerプロセスは、ジョブ実行開始時にジョブ専用のロックファイル（`~/.codex-scheduler/runners/<job_id>.lock`）の排他ロック（exclusive file lock）を取得しなければならない（MUST）。
    - Runnerプロセスは、Codexの実行中、このファイルロックを解放せず保持し続けなければならない（MUST）。
-   - Runnerプロセスは、Codex子プロセスの起動直後、ランナーメタデータ（`~/.codex-scheduler/runners/<job_id>.json`）に `runner_pid`、`codex_pid`、およびOSから取得した起動時刻（`codex_start_time`）を記録しなければならない（MUST）。
-3. **三値 Liveness 判定とハンドオフ保護**:
-   - Liveness 判定は、`Alive`（RunnerLock 保持または Codex 子プロセス生存）、`Dead`（OS 上でプロセスが終了していることを確認）、`Unknown`（システム呼出失敗・情報取得失敗等で生死を確定できない）の三値を明確に区別しなければならない（MUST）。
-   - スケジューラ tick による claim から Runner プロセスがロックを取得するまでのハンドオフ期間中（起動猶予時間）、ジョブを孤立クラッシュと誤判定して回復してはならない（MUST NOT）。
+   - Runnerプロセスは、Codex子プロセスの起動直後、ランナーメタデータ（`~/.codex-scheduler/runners/<job_id>.json`）を一時ファイル経由のアトミックな rename で書き込み、`runner_pid`、`codex_pid`、およびOSから取得した起動時刻（`codex_start_time`）を安全に記録しなければならない（MUST）。不完全な破損 JSON を公開してはならず（MUST NOT）、メタデータ書き込み失敗を無視してはならない（MUST NOT）。
+3. **三態メタデータ読み取りと三値 Liveness 判定**:
+   - ランナーメタデータの読み取り結果は、ファイル不在（`Missing`）、正常（`Present`）、読み取り/パース失敗（`Unreadable`）を明確に区別しなければならない（MUST）。
+   - `Unreadable`（ファイル読み取りエラーや JSON 破損等）が検出された場合、生存性判定は `Unknown` を返さなければならない（MUST）。
+   - Liveness 判定は、`Alive`（RunnerLock 保持または Codex 子プロセス生存）、`Dead`（OS 上でプロセスが終了していることを確認）、`Unknown`（システム呼出失敗・メタデータ破損・情報取得不能）の三値を明確に区別しなければならない（MUST）。
    - `Unknown` の場合は fail-closed として扱い、ジョブを `Running` のまま維持して回復を保留し、同一セッションへの二重 writer 起動をブロックしなければならない（MUST）。
+4. **手動デバッグ実行（run-job）における自己ロックの識別**:
+   - 手動実行時、呼び出し元自プロセスが既に RunnerLock を保持している場合、同一セッション排他検査において自己競合と誤認してクレームを自己妨害してはならない（MUST NOT）。ただし、過去の Codex 子プロセスが生存または Unknown である場合は、安全のため実行を拒絶しなければならない（MUST）。
 
-### SCHED-JOB-007: クラッシュおよび孤立ジョブの自動回復（Orphan Recovery）
+### SCHED-JOB-007: クラッシュおよび孤立ジョブの耐久的エビデンスに基づく自動回復（Orphan Recovery）
 
-1. **孤立Runningジョブの検知とCodex子プロセス保護**:
+1. **耐久的エビデンスに基づく孤立判定と Codex 子プロセス保護**:
    - スケジューラtick実行時、ストア上でステータスが `Running` であるジョブについて、対応するロックファイルの排他ロック取得を試行しなければならない（MUST）。
    - ロックが取得できない場合（`WouldBlock` 等）、Runnerプロセスは現在正常に生存・実行中であると判定し、ステータスを変更してはならない（MUST NOT）。
-   - ロックが取得できた場合（Runnerプロセスが失われた場合）、記録された `codex_pid` および `codex_start_time` に基づいてCodex子プロセスの Liveness を照合しなければならない（MUST）。
-   - **Codex子プロセスが `Alive` または `Unknown` の場合、ステータスを `Running` のまま維持し、回復処理を行ってはならない（MUST NOT）**。これにより同一セッションに対する二重writer起動を防止しなければならない（MUST）。
-2. **回復アクション**:
-   - ハンドオフ猶予期間を過ぎ、かつ Codex 子プロセスが確実に `Dead` であることが確認された場合にのみ、異常終了試行（`exit_code: None`, `error_message: "Runner process terminated unexpectedly (process crash or system restart)"`）を追加し、リトライポリシーに基づいて `Failed` または `Retrying` へ安全に遷移させ、メタデータとロックファイルをクリーンアップしなければならない（MUST）。これによりジョブが永久に `Running` に取り残されることを防止する。
+   - ロックが取得できた場合（Runnerプロセスが失われた場合）、客観的かつ耐久的なエビデンス（システムブート識別子、OS プロセス生存確認、ランナーメタデータ）に基づいて判定しなければならない（MUST）。
+   - 単なる時間経過（例: 15秒経過）のみを根拠としてジョブを Dead と判定し回復してはならない（MUST NOT）。
+   - システムブート識別子の変更（マシン再起動）が検出された場合、以前のプロセス群の消滅が確定的であるため、安全に回復を行わなければならない（MUST）。
+   - detached runner のプロセスが OS 上で生存している場合、起動処理中であるため回復を行ってはならない（MUST NOT）。
+   - ランナーメタデータが `Unreadable` である場合、または Codex 子プロセスが `ChildActive` もしくは `Unknown` である場合、ステータスを `Running` のまま維持し、回復処理を行ってはならない（MUST NOT）。これにより同一セッションに対する二重 writer 起動を 100% 防止しなければならない（MUST）。
+2. **安全な回復アクション**:
+   - システム再起動が確認された場合、または Runner プロセスおよび Codex 子プロセスの双方が客観的に `Dead` であることが確認された場合にのみ、異常終了試行（`exit_code: None`, `error_message: "Runner process terminated unexpectedly (process crash or system restart)"`）を追加し、リトライポリシーに基づいて `Failed` または `Retrying` へ安全に遷移させ、メタデータとロックファイルをクリーンアップしなければならない（MUST）。これによりジョブが永久に `Running` に取り残されることを防止する。
 
 ## 検証ルール
 

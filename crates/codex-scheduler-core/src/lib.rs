@@ -326,16 +326,21 @@ impl SchedulerService {
                                 if let Some(r_pid) = lease.runner_pid {
                                     match runner::get_process_start_time(r_pid) {
                                         Ok(Some(actual_start)) => {
-                                            let matches = match lease.runner_start_time.as_deref() {
-                                                Some(expected) => expected == actual_start,
-                                                None => true,
-                                            };
-                                            if matches {
-                                                // Detached runner process is actively running / starting up.
-                                                // Do NOT recover regardless of elapsed time.
-                                                continue;
-                                            } else {
-                                                runner_confirmed_dead = true;
+                                            match lease.runner_start_time.as_deref() {
+                                                Some(expected) if expected == actual_start => {
+                                                    // Detached runner process is actively running / starting up.
+                                                    // Do NOT recover regardless of elapsed time.
+                                                    continue;
+                                                }
+                                                Some(_) => {
+                                                    // PID was reused by another process (start time mismatch).
+                                                    // Runner process confirmed dead.
+                                                    runner_confirmed_dead = true;
+                                                }
+                                                None => {
+                                                    // Missing objective runner start identity: fail-closed Unknown.
+                                                    continue;
+                                                }
                                             }
                                         }
                                         Ok(None) => {
@@ -350,9 +355,21 @@ impl SchedulerService {
                                 } else {
                                     // Runner PID not yet recorded. Check if spawning tick is still alive.
                                     match runner::get_process_start_time(lease.tick_pid) {
-                                        Ok(Some(_)) => {
-                                            // Spawning tick is actively running. Do NOT recover.
-                                            continue;
+                                        Ok(Some(actual_start)) => {
+                                            match lease.tick_start_time.as_deref() {
+                                                Some(expected) if expected == actual_start => {
+                                                    // Spawning tick is actively running. Do NOT recover.
+                                                    continue;
+                                                }
+                                                Some(_) => {
+                                                    // Spawning tick PID reused. Spawning tick confirmed dead.
+                                                    runner_confirmed_dead = true;
+                                                }
+                                                None => {
+                                                    // Missing tick start identity: fail-closed Unknown.
+                                                    continue;
+                                                }
+                                            }
                                         }
                                         Ok(None) => {
                                             // Spawning tick died before recording runner PID.
@@ -382,9 +399,18 @@ impl SchedulerService {
                                 // If runner PID was not confirmed dead via lease, check info.runner_pid
                                 if !runner_confirmed_dead {
                                     match runner::get_process_start_time(info.runner_pid) {
-                                        Ok(Some(_)) => {
-                                            // Runner process is still alive on OS! Do NOT recover.
-                                            continue;
+                                        Ok(Some(actual_start)) => {
+                                            match info.runner_start_time.as_deref() {
+                                                Some(expected) if expected == actual_start => {
+                                                    // Runner process is still alive on OS! Do NOT recover.
+                                                    continue;
+                                                }
+                                                Some(_) => {}
+                                                None => {
+                                                    // Start identity unavailable: fail-closed Unknown.
+                                                    continue;
+                                                }
+                                            }
                                         }
                                         Ok(None) => {}
                                         Err(()) => {
@@ -483,14 +509,19 @@ impl SchedulerService {
                             let runner_start = runner::get_process_start_time(runner_pid).ok().flatten();
                             let lease = runner::read_handoff_lease(&job.id)
                                 .unwrap_or_else(|| runner::HandoffLease::new_initial(&job.id, std::process::id(), now));
-                            let updated_lease = lease.with_runner(runner_pid, runner_start);
+                            let updated_lease = lease.with_runner(runner_pid, runner_start.clone());
                             if let Err(e) = runner::write_handoff_lease(&updated_lease) {
                                 eprintln!("[Tick] Failed to persist updated runner lease for job {}: {}", job.id, e);
-                                runner::kill_process(runner_pid);
-                                runner::cleanup_runner_files(&job.id);
-                                let mut failed_job = job;
-                                failed_job.set_status(JobStatus::Failed);
-                                let _ = self.store.update_job(&failed_job);
+                                // RATIONALE: [SCHED-JOB-007] Confirm termination of runner & child on updated lease failure
+                                // Do not mark Failed or clean up files unless both runner and any spawned child are confirmed Dead.
+                                if runner::terminate_and_confirm_runner_and_child(&job.id, runner_pid, runner_start.as_deref()) {
+                                    runner::cleanup_runner_files(&job.id);
+                                    let mut failed_job = job;
+                                    failed_job.set_status(JobStatus::Failed);
+                                    let _ = self.store.update_job(&failed_job);
+                                } else {
+                                    eprintln!("[Tick] Could not confirm termination of runner/child for job {}. Retaining Running status for safety.", job.id);
+                                }
                                 continue;
                             }
                             spawned.push(job);
@@ -602,6 +633,11 @@ impl SchedulerService {
 
         let exec_result = match result {
             Ok(res) => res,
+            Err(e @ crate::adapter::AdapterError::UnconfirmedTermination(_)) => {
+                // RATIONALE: [SCHED-JOB-006] Fail-closed: unconfirmed termination must NEVER convert to normal Failed
+                // Retain job in Running status, do NOT clean up evidence files, and do NOT permit second writer.
+                return Err(CoreError::Adapter(e));
+            }
             Err(e) => ExecutionResult {
                 exit_code: Some(1),
                 stdout: String::new(),

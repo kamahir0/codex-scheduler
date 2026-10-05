@@ -172,42 +172,124 @@ impl JobStore {
     /// Atomically finds and claims jobs that are Scheduled or Retrying and due (scheduled_at <= now),
     /// changing their status to Running and persisting them under an exclusive file lock.
     /// Returns the claimed jobs. This prevents multiple tick processes or race conditions from executing the same job.
+    // RATIONALE: [CLI-CMD-002, OS-SCHED-003, SCHED-JOB-005] Universal same-session and target liveness verification
+    // Shared core invariant for both automated tick claiming (claim_due_jobs) and manual execution (claim_job_for_execution):
+    // 1. Session exclusivity: No other job with the same session_id may be Running OR have active/unknown liveness (liveness != Dead).
+    // 2. Target safety: Target job itself must NOT have active/unknown stale child process (ChildActive or Unknown).
+    // 3. Lock exclusivity: If runner lock is held, it must be held by the current process (allowed only when allow_self_lock is true).
+    // 4. Lease safety: Target job must NOT have an active handoff lease held by another process.
+    fn check_session_and_target_claimable(
+        jobs: &[Job],
+        target_id: &str,
+        session_id: &str,
+        allow_self_lock: bool,
+    ) -> Result<(), StoreError> {
+        // 1. Verify other jobs with the same session_id
+        for other in jobs.iter() {
+            if other.id != target_id && other.session_id == session_id {
+                if other.status == crate::models::JobStatus::Running {
+                    return Err(StoreError::SessionBusy(session_id.to_string()));
+                }
+                if crate::runner::get_job_liveness(&other.id) != crate::runner::LivenessState::Dead {
+                    return Err(StoreError::SessionBusy(session_id.to_string()));
+                }
+                if other.status.is_active() {
+                    if let crate::runner::HandoffLeaseRead::Present(ref lease) = crate::runner::read_handoff_lease_checked(&other.id) {
+                        if crate::runner::is_lease_active(lease) {
+                            return Err(StoreError::SessionBusy(session_id.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Verify target job itself for stale / unknown child process
+        match crate::runner::read_runner_info_checked(target_id) {
+            crate::runner::RunnerInfoRead::Present(info) => {
+                if crate::runner::check_codex_process_liveness(&info) != crate::runner::LivenessState::Dead {
+                    return Err(StoreError::SessionBusy(session_id.to_string()));
+                }
+            }
+            crate::runner::RunnerInfoRead::Unreadable(_) => {
+                return Err(StoreError::SessionBusy(session_id.to_string()));
+            }
+            crate::runner::RunnerInfoRead::Missing => {}
+        }
+
+        // 3. Verify RunnerLock for target job
+        if crate::runner::is_runner_active(target_id) {
+            if !allow_self_lock || !crate::runner::is_runner_lock_held_by_current_process(target_id) {
+                return Err(StoreError::SessionBusy(session_id.to_string()));
+            }
+        }
+
+        // 4. Verify target job's existing lease
+        match crate::runner::read_handoff_lease_checked(target_id) {
+            crate::runner::HandoffLeaseRead::Present(ref lease) => {
+                if crate::runner::is_lease_active(lease) {
+                    let is_foreign = if let Some(r_pid) = lease.runner_pid {
+                        !(allow_self_lock && r_pid == std::process::id())
+                    } else {
+                        lease.tick_pid != std::process::id()
+                    };
+                    if is_foreign {
+                        return Err(StoreError::SessionBusy(session_id.to_string()));
+                    }
+                }
+            }
+            crate::runner::HandoffLeaseRead::Unreadable(_) => {
+                return Err(StoreError::SessionBusy(session_id.to_string()));
+            }
+            crate::runner::HandoffLeaseRead::Missing => {}
+        }
+
+        Ok(())
+    }
+
+    // WHY: Both Scheduled and Retrying jobs must be claimed when their scheduled_at has arrived,
+    //      enabling automatic quota reset retries without requiring external re-scheduling.
+    // WHAT BREAKS: Omitting Retrying status causes jobs in retry backoff to stall indefinitely.
+    // EVIDENCE: docs/specs/os-scheduler.md, OS-SCHED-005, RETRY-POLICY-001
+    /// Atomically finds and claims jobs that are Scheduled or Retrying and due (scheduled_at <= now),
+    /// changing their status to Running and persisting them under an exclusive file lock.
+    /// Returns the claimed jobs. This prevents multiple tick processes or race conditions from executing the same job.
     pub fn claim_due_jobs(&self, now: DateTime<Utc>) -> Result<Vec<Job>, StoreError> {
         self.with_lock(|| {
             let mut jobs = self.load_all()?;
             let mut claimed = Vec::new();
+            let mut claimed_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-            // RATIONALE: [OS-SCHED-003] Prevent concurrent duplicate writers to the same Codex session
-            // Track active session IDs already running in store or newly claimed in this tick.
-            let mut active_sessions: std::collections::HashSet<String> = jobs
-                .iter()
-                .filter(|j| j.status == crate::models::JobStatus::Running)
-                .map(|j| j.session_id.clone())
-                .collect();
-
-            for job in jobs.iter_mut() {
+            for i in 0..jobs.len() {
                 let is_due_status = matches!(
-                    job.status,
+                    jobs[i].status,
                     crate::models::JobStatus::Scheduled | crate::models::JobStatus::Retrying
                 );
-                if is_due_status && job.scheduled_at <= now {
-                    // If another job with the same session_id is already running, defer this job to next tick
-                    if active_sessions.contains(&job.session_id) {
+                if is_due_status && jobs[i].scheduled_at <= now {
+                    let job_id = jobs[i].id.clone();
+                    let session_id = jobs[i].session_id.clone();
+
+                    // Check if already claimed another job in the same session in this tick
+                    if claimed_sessions.contains(&session_id) {
+                        continue;
+                    }
+
+                    // Check universal session & target liveness guard (allow_self_lock = false)
+                    if Self::check_session_and_target_claimable(&jobs, &job_id, &session_id, false).is_err() {
                         continue;
                     }
 
                     // RATIONALE: [SCHED-JOB-007] Establish durable lease BEFORE persisting Running status
                     // Eliminates the crash window where a job is persisted as Running without lease evidence.
                     // If lease write fails, skip claiming to keep job Scheduled/Retrying for retry.
-                    let lease = crate::runner::HandoffLease::new_initial(&job.id, std::process::id(), now);
+                    let lease = crate::runner::HandoffLease::new_initial(&job_id, std::process::id(), now);
                     if let Err(e) = crate::runner::write_handoff_lease(&lease) {
-                        eprintln!("[Store] Failed to write initial lease for job {}: {}. Skipping claim.", job.id, e);
+                        eprintln!("[Store] Failed to write initial lease for job {}: {}. Skipping claim.", job_id, e);
                         continue;
                     }
 
-                    active_sessions.insert(job.session_id.clone());
-                    job.set_status(crate::models::JobStatus::Running);
-                    claimed.push(job.clone());
+                    claimed_sessions.insert(session_id);
+                    jobs[i].set_status(crate::models::JobStatus::Running);
+                    claimed.push(jobs[i].clone());
                 }
             }
 
@@ -236,37 +318,8 @@ impl JobStore {
                 target.session_id.clone()
             };
 
-            // Check other jobs with the same session_id
-            for job in jobs.iter() {
-                if job.id != id && job.session_id == target_session_id {
-                    if job.status == crate::models::JobStatus::Running {
-                        return Err(StoreError::SessionBusy(target_session_id));
-                    }
-                    if crate::runner::get_job_liveness(&job.id) != crate::runner::LivenessState::Dead {
-                        return Err(StoreError::SessionBusy(target_session_id));
-                    }
-                }
-            }
-
-            // Check target job itself for stale/unknown child process
-            match crate::runner::read_runner_info_checked(id) {
-                crate::runner::RunnerInfoRead::Present(info) => {
-                    if crate::runner::check_codex_process_liveness(&info) != crate::runner::LivenessState::Dead {
-                        return Err(StoreError::SessionBusy(target_session_id));
-                    }
-                }
-                crate::runner::RunnerInfoRead::Unreadable(_) => {
-                    return Err(StoreError::SessionBusy(target_session_id));
-                }
-                crate::runner::RunnerInfoRead::Missing => {}
-            }
-
-            // Check if RunnerLock is held by another process
-            if crate::runner::is_runner_active(id) {
-                if !crate::runner::is_runner_lock_held_by_current_process(id) {
-                    return Err(StoreError::SessionBusy(target_session_id));
-                }
-            }
+            // Check universal session & target liveness guard (allow_self_lock = true)
+            Self::check_session_and_target_claimable(&jobs, id, &target_session_id, true)?;
 
             // Establish durable lease before persisting Running status
             let lease = crate::runner::HandoffLease::new_initial(id, std::process::id(), chrono::Utc::now());

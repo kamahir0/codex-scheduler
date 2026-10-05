@@ -96,10 +96,13 @@ impl CodexAdapter {
         // Persists RunnerInfo so orphan recovery can distinguish surviving Codex child from total termination.
         if let (Some(jid), Some(c_pid)) = (job_id, child.id()) {
             let start_time = crate::runner::get_process_start_time(c_pid).ok().flatten();
+            let r_pid = std::process::id();
+            let r_start = crate::runner::get_process_start_time(r_pid).ok().flatten();
             let info = crate::runner::RunnerInfo {
                 job_id: jid.to_string(),
                 session_id: session_id.to_string(),
-                runner_pid: std::process::id(),
+                runner_pid: r_pid,
+                runner_start_time: r_start,
                 runner_started_at: chrono::Utc::now(),
                 codex_pid: Some(c_pid),
                 codex_start_time: start_time,
@@ -118,10 +121,13 @@ impl CodexAdapter {
                         )));
                     }
                     _ => {
-                        crate::runner::write_corrupt_runner_info_marker(jid, c_pid);
-                        return Err(AdapterError::ProcessError(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("Failed to persist runner metadata and could not confirm child termination for job {}: {}. Guarded as Unknown.", jid, e),
+                        let marker_res = crate::runner::write_corrupt_runner_info_marker(jid, c_pid);
+                        if let Err(ref me) = marker_res {
+                            eprintln!("[Runner] Failed to persist corrupt marker for job {}: {}", jid, me);
+                        }
+                        return Err(AdapterError::UnconfirmedTermination(format!(
+                            "Failed to persist runner metadata and could not confirm child termination for job {}: {}. Guarded as Unknown (marker written: {}).",
+                            jid, e, marker_res.is_ok()
                         )));
                     }
                 }

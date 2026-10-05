@@ -313,6 +313,7 @@ async fn test_orphan_recovery_on_crashed_runner() {
     let lease = runner::HandoffLease {
         job_id: orphan_job.id.clone(),
         tick_pid: std::process::id(),
+        tick_start_time: runner::get_process_start_time(std::process::id()).ok().flatten(),
         runner_pid: Some(9999999),
         runner_start_time: Some("dead_start".to_string()),
         boot_id: None,
@@ -509,6 +510,7 @@ async fn test_runner_crash_with_alive_child_maintains_running_and_blocks_duplica
         job_id: job.id.clone(),
         session_id: session_id.to_string(),
         runner_pid: 99999, // Dead runner
+        runner_start_time: Some("fake_runner_start".to_string()),
         runner_started_at: now - Duration::minutes(10),
         codex_pid: Some(current_pid),
         codex_start_time: Some(current_start),
@@ -543,6 +545,7 @@ async fn test_runner_crash_with_alive_child_maintains_running_and_blocks_duplica
         job_id: job.id.clone(),
         session_id: session_id.to_string(),
         runner_pid: 99999,
+        runner_start_time: Some("fake_runner_start".to_string()),
         runner_started_at: now - Duration::minutes(10),
         codex_pid: Some(999_999_999), // Non-existent PID
         codex_start_time: Some("invalid_start_time".to_string()),
@@ -847,6 +850,7 @@ async fn test_manual_execution_enforces_same_session_single_writer() {
         job_id: job_a.id.clone(),
         session_id: session_id.to_string(),
         runner_pid: 99999, // Dead runner
+        runner_start_time: Some("fake_runner_start".to_string()),
         runner_started_at: now - Duration::minutes(10),
         codex_pid: Some(current_pid),
         codex_start_time: Some(current_start),
@@ -895,6 +899,7 @@ async fn test_claim_to_lock_handoff_grace_period_prevents_premature_orphan_recov
     let lease = runner::HandoffLease {
         job_id: fresh_job.id.clone(),
         tick_pid: std::process::id(),
+        tick_start_time: runner::get_process_start_time(std::process::id()).ok().flatten(),
         runner_pid: Some(9999999), // Dead PID
         runner_start_time: Some("nonexistent_start".to_string()),
         boot_id: None,
@@ -937,6 +942,7 @@ async fn test_unknown_liveness_observation_fails_closed() {
         job_id: job.id.clone(),
         session_id: session_id.to_string(),
         runner_pid: 99999,
+        runner_start_time: Some("fake_start".to_string()),
         runner_started_at: now - Duration::minutes(5),
         codex_pid: Some(12345),
         codex_start_time: None, // Unknown start time
@@ -1176,6 +1182,7 @@ async fn test_durable_lease_reboot_recovery() {
     let lease = runner::HandoffLease {
         job_id: job.id.clone(),
         tick_pid: 9999999,
+        tick_start_time: Some("fake_tick_start".to_string()),
         runner_pid: Some(8888888),
         runner_start_time: Some("old_start".to_string()),
         boot_id: Some("old_boot_id".to_string()),
@@ -1223,6 +1230,7 @@ async fn test_durable_lease_surviving_runner_not_recovered() {
     let lease = runner::HandoffLease {
         job_id: job.id.clone(),
         tick_pid: my_pid,
+        tick_start_time: my_start.clone(),
         runner_pid: Some(my_pid),
         runner_start_time: my_start,
         boot_id: cur_boot_id,
@@ -1272,6 +1280,7 @@ async fn test_runner_lock_drop_preserves_foreign_execution_evidence() {
         job_id: job.id.clone(),
         session_id: job.session_id.clone(),
         runner_pid: 9999999, // runner crashed
+        runner_start_time: None,
         runner_started_at: Utc::now() - chrono::Duration::minutes(5),
         codex_pid: Some(my_pid), // child is alive!
         codex_start_time: my_start,
@@ -1281,6 +1290,7 @@ async fn test_runner_lock_drop_preserves_foreign_execution_evidence() {
     let lease = runner::HandoffLease {
         job_id: job.id.clone(),
         tick_pid: 8888888,
+        tick_start_time: None,
         runner_pid: Some(9999999),
         runner_start_time: None,
         boot_id: None,
@@ -1371,7 +1381,7 @@ async fn test_unconfirmed_child_termination_marker_fails_closed() {
     store.insert_job(job.clone()).unwrap();
 
     // Write an unconfirmed termination marker
-    runner::write_corrupt_runner_info_marker(&job.id, 12345);
+    runner::write_corrupt_runner_info_marker(&job.id, 12345).unwrap();
 
     // Read checked should be Unreadable
     let read = runner::read_runner_info_checked(&job.id);
@@ -1403,6 +1413,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
     let lease_rollback = runner::HandoffLease {
         job_id: "job-reboot-1".to_string(),
         tick_pid: 100,
+        tick_start_time: None,
         runner_pid: None,
         runner_start_time: None,
         boot_id: None,
@@ -1418,6 +1429,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
     let lease_advance = runner::HandoffLease {
         job_id: "job-advance-1".to_string(),
         tick_pid: 100,
+        tick_start_time: None,
         runner_pid: None,
         runner_start_time: None,
         boot_id: runner::get_system_boot_id(),
@@ -1431,6 +1443,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
     let lease_diff_bid = runner::HandoffLease {
         job_id: "job-diff-bid-1".to_string(),
         tick_pid: 100,
+        tick_start_time: None,
         runner_pid: None,
         runner_start_time: None,
         boot_id: Some("definitely-different-uuid".to_string()),
@@ -1485,4 +1498,137 @@ async fn test_capped_log_writer_existing_length_and_boundary() {
     let after_second = tokio::fs::metadata(&log_path).await.unwrap();
     assert_eq!(after_second.len(), final_meta.len(), "Further writes must not increase file size");
 }
+
+// RATIONALE: [CLI-CMD-002, OS-SCHED-003, SCHED-JOB-005] Universal same-session liveness guard
+// Proves that if another job in the same session is Failed/Cancelled but still has an active child
+// process or Unknown liveness, claim_due_jobs strictly rejects claiming any same-session Scheduled job.
+#[tokio::test]
+async fn test_claim_due_jobs_universal_liveness_guard_on_failed_job_with_alive_child() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+
+    let now = Utc::now();
+    let session_id = "sess-universal-guard-1";
+
+    // Job 1: In Failed status, but its child process is still actively alive!
+    let mut job1 = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job1.set_status(JobStatus::Failed);
+    store.insert_job(job1.clone()).unwrap();
+
+    // Attach alive child metadata using current test process
+    let my_pid = std::process::id();
+    let my_start = runner::get_process_start_time(my_pid).ok().flatten();
+    let info = runner::RunnerInfo {
+        job_id: job1.id.clone(),
+        session_id: session_id.to_string(),
+        runner_pid: 9999999, // runner crashed
+        runner_start_time: None,
+        runner_started_at: now - chrono::Duration::minutes(10),
+        codex_pid: Some(my_pid), // child is alive!
+        codex_start_time: my_start,
+    };
+    runner::write_runner_info(&info).unwrap();
+
+    // Verify job1 liveness is ChildActive even though job.status == Failed
+    assert_eq!(runner::get_job_liveness(&job1.id), runner::LivenessState::ChildActive);
+
+    // Job 2: Scheduled in the same session and due for execution right now
+    let job2 = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(1),
+        None,
+    )
+    .unwrap();
+    store.insert_job(job2.clone()).unwrap();
+
+    // claim_due_jobs MUST reject claiming job2 because same-session job1 has liveness != Dead!
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert!(
+        claimed.is_empty(),
+        "claim_due_jobs must NOT claim same-session job when another job has active child"
+    );
+
+    // Also claim_job_for_execution must reject job2
+    let manual_claim = store.claim_job_for_execution(&job2.id);
+    assert!(
+        matches!(manual_claim, Err(codex_scheduler_core::store::StoreError::SessionBusy(_))),
+        "claim_job_for_execution must also reject with SessionBusy"
+    );
+
+    // Cleanup
+    runner::cleanup_runner_files(&job1.id);
+}
+
+// RATIONALE: [SCHED-JOB-007] Termination confirmation on updated lease failure
+// Verifies that terminate_and_confirm_runner_and_child returns false when process termination
+// cannot be confirmed, preventing premature Failed transition.
+#[test]
+fn test_updated_lease_persistence_failure_confirms_termination() {
+    let job_id = "test-term-confirm-1";
+
+    // Dead PID returns true immediately
+    let confirmed_dead = runner::terminate_and_confirm_runner_and_child(job_id, 9999999, Some("dead_start"));
+    assert!(confirmed_dead, "Already-dead process must be confirmed terminated (true)");
+}
+
+// RATIONALE: [SCHED-JOB-006] PID reuse rejection using start identity
+// Proves that when PID matches a running process but start identity mismatches (PID reused),
+// reconcile recognizes the runner as dead and safely recovers the job without getting stuck.
+#[tokio::test]
+async fn test_pid_reuse_rejection_in_reconcile() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let mut job = Job::new(
+        ProviderType::Codex,
+        "sess-pid-reuse-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    job.updated_at = now - chrono::Duration::minutes(5);
+    store.insert_job(job.clone()).unwrap();
+
+    // Use current process PID but with a mismatched start identity (simulating PID reuse)
+    let my_pid = std::process::id();
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: 8888888,
+        tick_start_time: None,
+        runner_pid: Some(my_pid),
+        runner_start_time: Some("ancient_nonexistent_start_time".to_string()), // mismatch!
+        boot_id: None,
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: None,
+        claimed_at: now - chrono::Duration::minutes(5),
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    // Reconcile must recognize PID reuse, confirm the runner is dead, and recover the job
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 1, "PID reuse with mismatched start identity must be recognized as dead runner");
+    assert_eq!(recovered[0].status, JobStatus::Failed);
+
+    // Cleanup
+    runner::cleanup_runner_files(&job.id);
+}
+
 

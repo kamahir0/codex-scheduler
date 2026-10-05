@@ -10,6 +10,8 @@ pub enum AdapterError {
     ProcessError(#[from] std::io::Error),
     #[error("Execution timed out after {0} seconds")]
     Timeout(u64),
+    #[error("Unconfirmed child termination: {0}")]
+    UnconfirmedTermination(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

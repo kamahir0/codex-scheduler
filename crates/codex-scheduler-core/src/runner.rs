@@ -25,6 +25,8 @@ pub struct RunnerInfo {
     pub job_id: String,
     pub session_id: String,
     pub runner_pid: u32,
+    #[serde(default)]
+    pub runner_start_time: Option<String>,
     pub runner_started_at: chrono::DateTime<chrono::Utc>,
     pub codex_pid: Option<u32>,
     pub codex_start_time: Option<String>,
@@ -34,6 +36,8 @@ pub struct RunnerInfo {
 pub struct HandoffLease {
     pub job_id: String,
     pub tick_pid: u32,
+    #[serde(default)]
+    pub tick_start_time: Option<String>,
     pub runner_pid: Option<u32>,
     pub runner_start_time: Option<String>,
     #[serde(default)]
@@ -293,10 +297,12 @@ pub fn current_boot_identity() -> (Option<String>, Option<u64>, Option<u64>) {
 
 impl HandoffLease {
     pub fn new_initial(job_id: &str, tick_pid: u32, claimed_at: chrono::DateTime<chrono::Utc>) -> Self {
+        let tick_start_time = get_process_start_time(tick_pid).ok().flatten();
         let (boot_id, boot_time, uptime_ms) = current_boot_identity();
         Self {
             job_id: job_id.to_string(),
             tick_pid,
+            tick_start_time,
             runner_pid: None,
             runner_start_time: None,
             boot_id,
@@ -347,14 +353,114 @@ pub fn is_reboot_detected(lease: &HandoffLease) -> bool {
 
 /// Writes an unconfirmed termination marker for a job when child termination cannot be verified.
 /// Distinguishes Unknown state from normal Dead state.
-pub fn write_corrupt_runner_info_marker(job_id: &str, unconfirmed_pid: u32) {
-    if let Ok(dir) = runner_lock_dir() {
-        let path = dir.join(format!("{}.json", job_id));
-        let content = format!(
-            "{{\"job_id\":\"{}\",\"unconfirmed_child_pid\":{},\"status\":\"unconfirmed_termination\"}}",
-            job_id, unconfirmed_pid
-        );
-        let _ = fs::write(path, content);
+pub fn write_corrupt_runner_info_marker(job_id: &str, unconfirmed_pid: u32) -> Result<(), RunnerError> {
+    let dir = runner_lock_dir()?;
+    let path = dir.join(format!("{}.json", job_id));
+    let content = format!(
+        "{{\"job_id\":\"{}\",\"unconfirmed_child_pid\":{},\"status\":\"unconfirmed_termination\"}}",
+        job_id, unconfirmed_pid
+    );
+    fs::write(path, content)?;
+    Ok(())
+}
+
+/// Evaluates whether a HandoffLease represents an actively running process (tick or runner).
+/// Uses strict PID + start identity matching; does NOT fallback to PID-only checks.
+/// If reboot is detected or start identity cannot be verified, returns false.
+pub fn is_lease_active(lease: &HandoffLease) -> bool {
+    if is_reboot_detected(lease) {
+        return false;
+    }
+
+    if let Some(r_pid) = lease.runner_pid {
+        let expected_start = match lease.runner_start_time.as_deref() {
+            Some(s) => s,
+            None => return false,
+        };
+        match get_process_start_time(r_pid) {
+            Ok(Some(actual_start)) => actual_start == expected_start,
+            _ => false,
+        }
+    } else {
+        let expected_tick_start = match lease.tick_start_time.as_deref() {
+            Some(s) => s,
+            None => return false,
+        };
+        match get_process_start_time(lease.tick_pid) {
+            Ok(Some(actual_start)) => actual_start == expected_tick_start,
+            _ => false,
+        }
+    }
+}
+
+/// Attempts to terminate both the detached runner process and any recorded Codex child process,
+/// polling and confirming termination within a bounded window.
+/// Returns true only if BOTH runner and child are confirmed terminated.
+/// Returns false (fail-closed) if termination cannot be confirmed.
+pub fn terminate_and_confirm_runner_and_child(job_id: &str, runner_pid: u32, runner_start: Option<&str>) -> bool {
+    kill_process(runner_pid);
+
+    // Poll up to 3 seconds for runner termination
+    let mut runner_dead = false;
+    for _ in 0..60 {
+        match get_process_start_time(runner_pid) {
+            Ok(Some(actual)) => {
+                if let Some(expected) = runner_start {
+                    if actual != expected {
+                        runner_dead = true;
+                        break;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Ok(None) => {
+                runner_dead = true;
+                break;
+            }
+            Err(()) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+
+    if !runner_dead {
+        return false;
+    }
+
+    // Check if child was spawned
+    match read_runner_info_checked(job_id) {
+        RunnerInfoRead::Present(info) => {
+            if let Some(c_pid) = info.codex_pid {
+                kill_process(c_pid);
+                let mut child_dead = false;
+                for _ in 0..60 {
+                    match get_process_start_time(c_pid) {
+                        Ok(Some(actual)) => {
+                            if let Some(expected) = info.codex_start_time.as_deref() {
+                                if actual != expected {
+                                    child_dead = true;
+                                    break;
+                                }
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                        Ok(None) => {
+                            child_dead = true;
+                            break;
+                        }
+                        Err(()) => {
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                    }
+                }
+                if !child_dead {
+                    return false;
+                }
+            }
+            true
+        }
+        RunnerInfoRead::Missing => true,
+        RunnerInfoRead::Unreadable(_) => false,
     }
 }
 

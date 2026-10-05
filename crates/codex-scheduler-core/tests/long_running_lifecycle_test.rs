@@ -320,6 +320,7 @@ async fn test_orphan_recovery_on_crashed_runner() {
         boot_time: runner::get_system_boot_time().ok(),
         uptime_ms: None,
         claimed_at: now - Duration::minutes(5),
+        unconfirmed_child: false,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -906,6 +907,7 @@ async fn test_claim_to_lock_handoff_grace_period_prevents_premature_orphan_recov
         boot_time: runner::get_system_boot_time().ok(),
         uptime_ms: None,
         claimed_at: now - chrono::Duration::seconds(20),
+        unconfirmed_child: false,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1189,6 +1191,7 @@ async fn test_durable_lease_reboot_recovery() {
         boot_time: Some(1), // Mismatched boot timestamp indicates machine reboot
         uptime_ms: Some(u64::MAX), // Exceedingly high uptime ensures current_uptime < lease_uptime on Windows
         claimed_at: Utc::now() - chrono::Duration::minutes(5),
+        unconfirmed_child: false,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1237,6 +1240,7 @@ async fn test_durable_lease_surviving_runner_not_recovered() {
         boot_time: cur_boot_time,
         uptime_ms: cur_uptime,
         claimed_at: Utc::now() - chrono::Duration::minutes(5),
+        unconfirmed_child: false,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1297,6 +1301,7 @@ async fn test_runner_lock_drop_preserves_foreign_execution_evidence() {
         boot_time: None,
         uptime_ms: None,
         claimed_at: Utc::now() - chrono::Duration::minutes(5),
+        unconfirmed_child: false,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1420,6 +1425,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
         boot_time: None,
         uptime_ms: Some(u64::MAX), // lease has very large uptime
         claimed_at: now,
+        unconfirmed_child: false,
     };
     if runner::get_system_uptime_ms().is_ok() {
         assert!(runner::is_reboot_detected(&lease_rollback));
@@ -1436,6 +1442,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
         boot_time: runner::get_system_boot_time().ok(),
         uptime_ms: Some(1), // lease uptime is 1ms, current uptime is certainly >= 1ms
         claimed_at: now,
+        unconfirmed_child: false,
     };
     assert!(!runner::is_reboot_detected(&lease_advance), "Monotonic advance must not trigger false reboot");
 
@@ -1450,6 +1457,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
         boot_time: None,
         uptime_ms: None,
         claimed_at: now,
+        unconfirmed_child: false,
     };
     if runner::get_system_boot_id().is_some() {
         assert!(runner::is_reboot_detected(&lease_diff_bid));
@@ -1619,6 +1627,7 @@ async fn test_pid_reuse_rejection_in_reconcile() {
         boot_time: runner::get_system_boot_time().ok(),
         uptime_ms: None,
         claimed_at: now - chrono::Duration::minutes(5),
+        unconfirmed_child: false,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1630,5 +1639,217 @@ async fn test_pid_reuse_rejection_in_reconcile() {
     // Cleanup
     runner::cleanup_runner_files(&job.id);
 }
+
+// RATIONALE: [SCHED-JOB-006] Verify OS start identity before killing PID to prevent killing reused PIDs
+// Proves that when given the current process PID with an intentionally mismatched start identity,
+// safe_terminate_and_confirm does NOT kill the current process, and correctly reports DeadOrMismatch.
+#[test]
+fn test_terminate_and_confirm_never_kills_mismatched_reused_pid() {
+    let my_pid = std::process::id();
+    let mismatched_start = "mismatched_start_identity_from_ancient_time";
+
+    // Call safe_terminate_and_confirm with current process PID but mismatched identity
+    let res = runner::safe_terminate_and_confirm(my_pid, Some(mismatched_start));
+    assert_eq!(
+        res,
+        Ok(true),
+        "Mismatched start identity must be treated as Dead (target process dead) without killing current process"
+    );
+
+    // Call terminate_and_confirm_runner_and_child with current process PID but mismatched identity
+    let job_id = "test-never-kill-reused-1";
+    let confirmed = runner::terminate_and_confirm_runner_and_child(job_id, my_pid, Some(mismatched_start));
+    assert!(confirmed, "Target runner must be confirmed dead without killing the alive current process");
+
+    // Also verify missing expected identity fails-closed as Unknown and does NOT kill
+    let unknown_res = runner::safe_terminate_and_confirm(my_pid, None);
+    assert_eq!(unknown_res, Err(()), "Missing expected identity must fail-closed as Unknown and not kill");
+}
+
+// RATIONALE: [SCHED-JOB-007] Pre-kill child enumeration closes RunnerInfo Missing race
+// Proves that when runner spawned a child process but RunnerInfo was not yet persisted,
+// terminate_and_confirm_runner_and_child pre-enumerates child processes and terminates both
+// runner and child so no untracked child remains alive.
+#[tokio::test]
+async fn test_updated_lease_failure_runner_info_missing_terminates_all_children() {
+    let job_id = "test-lease-fail-no-untracked-child-1";
+
+    #[cfg(unix)]
+    let mut runner_cmd = std::process::Command::new("sh");
+    #[cfg(unix)]
+    runner_cmd.arg("-c").arg("sleep 60 & wait");
+
+    #[cfg(windows)]
+    let mut runner_cmd = std::process::Command::new("cmd");
+    #[cfg(windows)]
+    runner_cmd.arg("/C").arg("powershell -NoProfile -Command Start-Sleep -Seconds 60");
+
+    let mut runner_proc = runner_cmd.spawn().expect("failed to spawn runner process");
+    let runner_pid = runner_proc.id();
+    let runner_start = runner::get_process_start_time(runner_pid).ok().flatten();
+
+    // Give bounded time for child to be spawned
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+    // Verify child was spawned and discovered via find_child_pids_of
+    let children = runner::find_child_pids_of(runner_pid);
+    assert!(!children.is_empty(), "Runner must have spawned at least one child process");
+    let child_pid = children[0];
+
+    // Ensure RunnerInfo is Missing
+    assert_eq!(runner::read_runner_info_checked(job_id), runner::RunnerInfoRead::Missing);
+
+    // Call terminate_and_confirm_runner_and_child
+    let confirmed = runner::terminate_and_confirm_runner_and_child(job_id, runner_pid, runner_start.as_deref());
+    assert!(confirmed, "terminate_and_confirm_runner_and_child must succeed");
+
+    // Verify untracked child did NOT remain alive!
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    let child_alive = runner::get_process_start_time(child_pid).ok().flatten().is_some();
+    assert!(!child_alive, "No untracked child process must remain running after termination confirmation");
+
+    let _ = runner_proc.wait();
+}
+
+// RATIONALE: [SCHED-JOB-006] Durable unconfirmed execution guard even if marker persistence fails
+// Proves that when marker persistence fails and child termination is unconfirmed,
+// the unconfirmed guard in the job store keeps the job Running/fail-closed and strictly blocks
+// any same-session second writer on subsequent scheduler ticks after runner exit.
+#[tokio::test]
+async fn test_unconfirmed_termination_durable_guard_blocks_second_writer_without_marker() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-unconfirmed-durable-1";
+
+    // Job 1: Running, but has unconfirmed_execution guard (simulating unconfirmed termination with failed marker write)
+    let mut job1 = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job1.set_status(JobStatus::Running);
+    job1.unconfirmed_execution = true;
+    job1.updated_at = now - chrono::Duration::minutes(10);
+    store.insert_job(job1.clone()).unwrap();
+
+    // Ensure NO marker file exists on disk (marker persistence failure simulation)
+    assert_eq!(runner::read_runner_info_checked(&job1.id), runner::RunnerInfoRead::Missing);
+
+    // Reconcile tick runs after runner has terminated
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert!(recovered.is_empty(), "reconcile_running_jobs must NEVER recover a job with unconfirmed_execution");
+
+    let retrieved_job1 = store.get_job(&job1.id).unwrap().unwrap();
+    assert_eq!(retrieved_job1.status, JobStatus::Running, "Job must remain in Running status");
+
+    // Job 2: Scheduled in the same session, due right now
+    let job2 = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(1),
+        None,
+    )
+    .unwrap();
+    store.insert_job(job2.clone()).unwrap();
+
+    // Tick claim must reject claiming job2
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert!(
+        claimed.is_empty(),
+        "claim_due_jobs must strictly reject same-session second writer when another job has unconfirmed execution"
+    );
+
+    // Manual run-job must also reject job2
+    let manual_claim = store.claim_job_for_execution(&job2.id);
+    assert!(
+        matches!(manual_claim, Err(codex_scheduler_core::store::StoreError::SessionBusy(_))),
+        "Manual claim must also reject with SessionBusy"
+    );
+
+    // Cleanup
+    runner::cleanup_runner_files(&job1.id);
+    runner::cleanup_runner_files(&job2.id);
+}
+
+// RATIONALE: [SCHED-JOB-006] Tri-state Lease liveness (Active, Dead, Unknown)
+// Verifies that check_lease_liveness distinguishes Active, Dead (PID mismatch), and Unknown (missing identity or inspection error),
+// and does not collapse Unknown into Dead.
+#[test]
+fn test_lease_liveness_tri_state() {
+    let now = Utc::now();
+    let my_pid = std::process::id();
+    let my_start = runner::get_process_start_time(my_pid).ok().flatten();
+
+    // 1. Active: matching PID and start identity
+    let active_lease = runner::HandoffLease {
+        job_id: "job-lease-active".to_string(),
+        tick_pid: my_pid,
+        tick_start_time: my_start.clone(),
+        runner_pid: Some(my_pid),
+        runner_start_time: my_start.clone(),
+        boot_id: None,
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: runner::get_system_uptime_ms().ok(),
+        claimed_at: now,
+        unconfirmed_child: false,
+    };
+    assert_eq!(runner::check_lease_liveness(&active_lease), runner::LeaseLiveness::Active);
+
+    // 2. Dead: PID mismatch (reused PID)
+    let dead_lease = runner::HandoffLease {
+        job_id: "job-lease-dead".to_string(),
+        tick_pid: my_pid,
+        tick_start_time: my_start.clone(),
+        runner_pid: Some(my_pid),
+        runner_start_time: Some("ancient_nonexistent_start_time".to_string()),
+        boot_id: None,
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: runner::get_system_uptime_ms().ok(),
+        claimed_at: now,
+        unconfirmed_child: false,
+    };
+    assert_eq!(runner::check_lease_liveness(&dead_lease), runner::LeaseLiveness::Dead);
+
+    // 3. Unknown: missing start identity
+    let unknown_lease = runner::HandoffLease {
+        job_id: "job-lease-unknown".to_string(),
+        tick_pid: my_pid,
+        tick_start_time: None,
+        runner_pid: Some(my_pid),
+        runner_start_time: None, // identity missing!
+        boot_id: None,
+        boot_time: None,
+        uptime_ms: None,
+        claimed_at: now,
+        unconfirmed_child: false,
+    };
+    assert_eq!(runner::check_lease_liveness(&unknown_lease), runner::LeaseLiveness::Unknown);
+
+    // 4. Unknown: unconfirmed_child flag
+    let unconfirmed_child_lease = runner::HandoffLease {
+        job_id: "job-lease-unconfirmed".to_string(),
+        tick_pid: my_pid,
+        tick_start_time: my_start.clone(),
+        runner_pid: Some(my_pid),
+        runner_start_time: my_start,
+        boot_id: None,
+        boot_time: None,
+        uptime_ms: None,
+        claimed_at: now,
+        unconfirmed_child: true,
+    };
+    assert_eq!(runner::check_lease_liveness(&unconfirmed_child_lease), runner::LeaseLiveness::Unknown);
+}
+
 
 

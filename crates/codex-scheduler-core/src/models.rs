@@ -93,6 +93,8 @@ pub struct Job {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub execution_history: Vec<ExecutionAttempt>,
+    #[serde(default)]
+    pub unconfirmed_execution: bool,
 }
 
 impl Job {
@@ -132,6 +134,7 @@ impl Job {
             created_at: now,
             updated_at: now,
             execution_history: Vec::new(),
+            unconfirmed_execution: false,
         })
     }
 

@@ -47,6 +47,8 @@ pub struct HandoffLease {
     #[serde(default)]
     pub uptime_ms: Option<u64>,
     pub claimed_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub unconfirmed_child: bool,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -309,6 +311,7 @@ impl HandoffLease {
             boot_time,
             uptime_ms,
             claimed_at,
+            unconfirmed_child: false,
         }
     }
 
@@ -364,104 +367,234 @@ pub fn write_corrupt_runner_info_marker(job_id: &str, unconfirmed_pid: u32) -> R
     Ok(())
 }
 
-/// Evaluates whether a HandoffLease represents an actively running process (tick or runner).
-/// Uses strict PID + start identity matching; does NOT fallback to PID-only checks.
-/// If reboot is detected or start identity cannot be verified, returns false.
-pub fn is_lease_active(lease: &HandoffLease) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LeaseLiveness {
+    Active,
+    Dead,
+    Unknown,
+}
+
+/// Evaluates tri-state liveness for a HandoffLease (Active, Dead, Unknown).
+/// Invariants:
+/// - unconfirmed_child guard -> Unknown (fail-closed)
+/// - Reboot detected -> Dead
+/// - Identity missing or OS inspection error -> Unknown (fail-closed, never assumed Dead)
+/// - Process does not exist or start identity mismatch (PID reuse) -> Dead
+/// - Process exists and start identity matches -> Active
+pub fn check_lease_liveness(lease: &HandoffLease) -> LeaseLiveness {
+    if lease.unconfirmed_child {
+        return LeaseLiveness::Unknown;
+    }
+
     if is_reboot_detected(lease) {
-        return false;
+        return LeaseLiveness::Dead;
     }
 
     if let Some(r_pid) = lease.runner_pid {
         let expected_start = match lease.runner_start_time.as_deref() {
             Some(s) => s,
-            None => return false,
+            None => return LeaseLiveness::Unknown,
         };
         match get_process_start_time(r_pid) {
-            Ok(Some(actual_start)) => actual_start == expected_start,
-            _ => false,
+            Ok(Some(actual_start)) => {
+                if actual_start == expected_start {
+                    LeaseLiveness::Active
+                } else {
+                    LeaseLiveness::Dead
+                }
+            }
+            Ok(None) => LeaseLiveness::Dead,
+            Err(()) => LeaseLiveness::Unknown,
         }
     } else {
         let expected_tick_start = match lease.tick_start_time.as_deref() {
             Some(s) => s,
-            None => return false,
+            None => return LeaseLiveness::Unknown,
         };
         match get_process_start_time(lease.tick_pid) {
-            Ok(Some(actual_start)) => actual_start == expected_tick_start,
-            _ => false,
+            Ok(Some(actual_start)) => {
+                if actual_start == expected_tick_start {
+                    LeaseLiveness::Active
+                } else {
+                    LeaseLiveness::Dead
+                }
+            }
+            Ok(None) => LeaseLiveness::Dead,
+            Err(()) => LeaseLiveness::Unknown,
         }
     }
 }
 
-/// Attempts to terminate both the detached runner process and any recorded Codex child process,
-/// polling and confirming termination within a bounded window.
-/// Returns true only if BOTH runner and child are confirmed terminated.
-/// Returns false (fail-closed) if termination cannot be confirmed.
-pub fn terminate_and_confirm_runner_and_child(job_id: &str, runner_pid: u32, runner_start: Option<&str>) -> bool {
-    kill_process(runner_pid);
+pub fn is_lease_active(lease: &HandoffLease) -> bool {
+    check_lease_liveness(lease) == LeaseLiveness::Active
+}
 
-    // Poll up to 3 seconds for runner termination
-    let mut runner_dead = false;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessIdentityCheck {
+    Matches,
+    DeadOrMismatch,
+    Unknown,
+}
+
+/// Verifies whether a process exists and its start identity matches expected identity.
+/// Invariants:
+/// - Missing expected identity -> Unknown
+/// - OS inspection error -> Unknown
+/// - Process not found or start identity mismatch -> DeadOrMismatch
+/// - Start identity matches -> Matches
+pub fn check_process_identity(pid: u32, expected_start: Option<&str>) -> ProcessIdentityCheck {
+    let expected = match expected_start {
+        Some(s) if !s.is_empty() => s,
+        _ => return ProcessIdentityCheck::Unknown,
+    };
+    match get_process_start_time(pid) {
+        Ok(Some(actual)) => {
+            if actual == expected {
+                ProcessIdentityCheck::Matches
+            } else {
+                ProcessIdentityCheck::DeadOrMismatch
+            }
+        }
+        Ok(None) => ProcessIdentityCheck::DeadOrMismatch,
+        Err(()) => ProcessIdentityCheck::Unknown,
+    }
+}
+
+/// Safely terminates and confirms exit of a process matching expected start identity.
+/// Invariants:
+/// - Verifies PID + start identity BEFORE sending kill signal. NEVER kills mismatched or reused PIDs.
+/// - If process is already dead or PID mismatched, returns Ok(true) without calling kill_process.
+/// - If identity cannot be confirmed (missing expected identity or OS query error), returns Err(()) without killing (fail-closed Unknown).
+/// - If identity matches, calls kill_process(pid) and polls up to 3 seconds for exit confirmation.
+pub fn safe_terminate_and_confirm(pid: u32, expected_start: Option<&str>) -> Result<bool, ()> {
+    match check_process_identity(pid, expected_start) {
+        ProcessIdentityCheck::DeadOrMismatch => return Ok(true),
+        ProcessIdentityCheck::Unknown => return Err(()),
+        ProcessIdentityCheck::Matches => {
+            kill_process(pid);
+        }
+    }
+
+    // Poll up to 3.0s (60 iterations x 50ms) for confirmation
     for _ in 0..60 {
-        match get_process_start_time(runner_pid) {
-            Ok(Some(actual)) => {
-                if let Some(expected) = runner_start {
-                    if actual != expected {
-                        runner_dead = true;
+        match check_process_identity(pid, expected_start) {
+            ProcessIdentityCheck::DeadOrMismatch => return Ok(true),
+            ProcessIdentityCheck::Matches => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            ProcessIdentityCheck::Unknown => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+#[cfg(not(windows))]
+pub fn find_child_pids_of(parent_pid: u32) -> Vec<u32> {
+    if parent_pid == 0 {
+        return Vec::new();
+    }
+    let output = match std::process::Command::new("pgrep")
+        .arg("-P")
+        .arg(parent_pid.to_string())
+        .output()
+    {
+        Ok(out) => out,
+        Err(_) => return Vec::new(),
+    };
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.lines()
+            .filter_map(|l| l.trim().parse::<u32>().ok())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+pub fn find_child_pids_of(parent_pid: u32) -> Vec<u32> {
+    if parent_pid == 0 {
+        return Vec::new();
+    }
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    let mut children = Vec::new();
+    unsafe {
+        if let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            let mut entry = PROCESSENTRY32::default();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
+            if Process32First(snapshot, &mut entry).is_ok() {
+                loop {
+                    if entry.th32ParentProcessID == parent_pid {
+                        children.push(entry.th32ProcessID);
+                    }
+                    if Process32Next(snapshot, &mut entry).is_err() {
                         break;
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            Ok(None) => {
-                runner_dead = true;
-                break;
-            }
-            Err(()) => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
+            let _ = CloseHandle(snapshot);
         }
     }
+    children
+}
 
-    if !runner_dead {
-        return false;
-    }
+/// Attempts to terminate both the detached runner process and any spawned Codex child processes,
+/// verifying process start identities BEFORE killing to prevent terminating reused PIDs.
+/// Pre-enumerates child processes of runner_pid to close the window where a child was spawned
+/// but RunnerInfo was not yet persisted.
+/// Returns true only if BOTH runner and all child processes are confirmed terminated.
+/// Returns false (fail-closed) if termination cannot be confirmed or identity is Unknown.
+pub fn terminate_and_confirm_runner_and_child(
+    job_id: &str,
+    runner_pid: u32,
+    runner_start: Option<&str>,
+) -> bool {
+    // 1. Check runner process identity
+    let runner_check = check_process_identity(runner_pid, runner_start);
 
-    // Check if child was spawned
+    // 2. Gather all target child processes BEFORE terminating runner
+    let mut child_targets: Vec<(u32, Option<String>)> = Vec::new();
+
     match read_runner_info_checked(job_id) {
         RunnerInfoRead::Present(info) => {
             if let Some(c_pid) = info.codex_pid {
-                kill_process(c_pid);
-                let mut child_dead = false;
-                for _ in 0..60 {
-                    match get_process_start_time(c_pid) {
-                        Ok(Some(actual)) => {
-                            if let Some(expected) = info.codex_start_time.as_deref() {
-                                if actual != expected {
-                                    child_dead = true;
-                                    break;
-                                }
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                        }
-                        Ok(None) => {
-                            child_dead = true;
-                            break;
-                        }
-                        Err(()) => {
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                        }
-                    }
-                }
-                if !child_dead {
-                    return false;
+                child_targets.push((c_pid, info.codex_start_time));
+            }
+        }
+        RunnerInfoRead::Unreadable(_) => return false, // Metadata corrupt: fail-closed Unknown
+        RunnerInfoRead::Missing => {
+            // Only inspect process tree of runner_pid if runner_pid actually matches our runner!
+            if runner_check == ProcessIdentityCheck::Matches {
+                for child_pid in find_child_pids_of(runner_pid) {
+                    let start = get_process_start_time(child_pid).ok().flatten();
+                    child_targets.push((child_pid, start));
                 }
             }
-            true
         }
-        RunnerInfoRead::Missing => true,
-        RunnerInfoRead::Unreadable(_) => false,
     }
+
+    // 3. Terminate and confirm runner process
+    match safe_terminate_and_confirm(runner_pid, runner_start) {
+        Ok(true) => {}
+        _ => return false, // Failed to terminate, timed out, or identity Unknown -> fail-closed
+    }
+
+    // 4. Terminate and confirm all child processes
+    for (c_pid, c_start) in child_targets {
+        match safe_terminate_and_confirm(c_pid, c_start.as_deref()) {
+            Ok(true) => {}
+            _ => return false, // Failed to terminate child -> fail-closed
+        }
+    }
+
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -475,11 +608,16 @@ pub enum LivenessState {
 #[cfg(windows)]
 pub fn get_process_start_time(pid: u32) -> Result<Option<String>, ()> {
     use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
-    use windows::Win32::System::Threading::{OpenProcess, GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::System::Threading::{OpenProcess, GetProcessTimes, GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::Foundation::FILETIME;
     unsafe {
         match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
             Ok(handle) => {
+                let mut exit_code = 0u32;
+                if GetExitCodeProcess(handle, &mut exit_code).is_ok() && exit_code != 259 {
+                    let _ = CloseHandle(handle);
+                    return Ok(None); // Process has exited!
+                }
                 let mut creation = FILETIME::default();
                 let mut exit = FILETIME::default();
                 let mut kernel = FILETIME::default();
@@ -511,7 +649,7 @@ pub fn get_process_start_time(pid: u32) -> Result<Option<String>, ()> {
         .arg("-p")
         .arg(pid.to_string())
         .arg("-o")
-        .arg("lstart=")
+        .arg("stat=,lstart=")
         .output()
     {
         Ok(out) => out,
@@ -520,10 +658,19 @@ pub fn get_process_start_time(pid: u32) -> Result<Option<String>, ()> {
 
     if output.status.success() {
         let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !s.is_empty() {
-            Ok(Some(s))
+        if s.is_empty() {
+            return Ok(None);
+        }
+        // If the process is a zombie (defunct), it is definitively terminated.
+        if s.starts_with('Z') {
+            return Ok(None);
+        }
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let lstart = parts[1..].join(" ");
+            Ok(Some(lstart))
         } else {
-            Ok(None)
+            Ok(Some(s))
         }
     } else {
         Ok(None)
@@ -709,6 +856,12 @@ pub fn get_runner_lock_holder(job_id: &str) -> Option<u32> {
 pub fn get_job_liveness(job_id: &str) -> LivenessState {
     if is_runner_active(job_id) {
         return LivenessState::RunnerActive;
+    }
+    match read_handoff_lease_checked(job_id) {
+        HandoffLeaseRead::Present(ref lease) if lease.unconfirmed_child => {
+            return LivenessState::Unknown;
+        }
+        _ => {}
     }
     match read_runner_info_checked(job_id) {
         RunnerInfoRead::Present(info) => check_codex_process_liveness(&info),

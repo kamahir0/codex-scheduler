@@ -187,23 +187,38 @@ impl JobStore {
         // 1. Verify other jobs with the same session_id
         for other in jobs.iter() {
             if other.id != target_id && other.session_id == session_id {
-                if other.status == crate::models::JobStatus::Running {
+                if other.status == crate::models::JobStatus::Running || other.unconfirmed_execution {
                     return Err(StoreError::SessionBusy(session_id.to_string()));
                 }
                 if crate::runner::get_job_liveness(&other.id) != crate::runner::LivenessState::Dead {
                     return Err(StoreError::SessionBusy(session_id.to_string()));
                 }
                 if other.status.is_active() {
-                    if let crate::runner::HandoffLeaseRead::Present(ref lease) = crate::runner::read_handoff_lease_checked(&other.id) {
-                        if crate::runner::is_lease_active(lease) {
+                    match crate::runner::read_handoff_lease_checked(&other.id) {
+                        crate::runner::HandoffLeaseRead::Present(ref lease) => {
+                            match crate::runner::check_lease_liveness(lease) {
+                                crate::runner::LeaseLiveness::Active | crate::runner::LeaseLiveness::Unknown => {
+                                    return Err(StoreError::SessionBusy(session_id.to_string()));
+                                }
+                                crate::runner::LeaseLiveness::Dead => {}
+                            }
+                        }
+                        crate::runner::HandoffLeaseRead::Unreadable(_) => {
                             return Err(StoreError::SessionBusy(session_id.to_string()));
                         }
+                        crate::runner::HandoffLeaseRead::Missing => {}
                     }
                 }
             }
         }
 
-        // 2. Verify target job itself for stale / unknown child process
+        // 2. Verify target job itself for stale / unknown child process or unconfirmed guard
+        if let Some(target) = jobs.iter().find(|j| j.id == target_id) {
+            if target.unconfirmed_execution {
+                return Err(StoreError::SessionBusy(session_id.to_string()));
+            }
+        }
+
         match crate::runner::read_runner_info_checked(target_id) {
             crate::runner::RunnerInfoRead::Present(info) => {
                 if crate::runner::check_codex_process_liveness(&info) != crate::runner::LivenessState::Dead {
@@ -226,15 +241,21 @@ impl JobStore {
         // 4. Verify target job's existing lease
         match crate::runner::read_handoff_lease_checked(target_id) {
             crate::runner::HandoffLeaseRead::Present(ref lease) => {
-                if crate::runner::is_lease_active(lease) {
-                    let is_foreign = if let Some(r_pid) = lease.runner_pid {
-                        !(allow_self_lock && r_pid == std::process::id())
-                    } else {
-                        lease.tick_pid != std::process::id()
-                    };
-                    if is_foreign {
+                match crate::runner::check_lease_liveness(lease) {
+                    crate::runner::LeaseLiveness::Active => {
+                        let is_foreign = if let Some(r_pid) = lease.runner_pid {
+                            !(allow_self_lock && r_pid == std::process::id())
+                        } else {
+                            lease.tick_pid != std::process::id()
+                        };
+                        if is_foreign {
+                            return Err(StoreError::SessionBusy(session_id.to_string()));
+                        }
+                    }
+                    crate::runner::LeaseLiveness::Unknown => {
                         return Err(StoreError::SessionBusy(session_id.to_string()));
                     }
+                    crate::runner::LeaseLiveness::Dead => {}
                 }
             }
             crate::runner::HandoffLeaseRead::Unreadable(_) => {

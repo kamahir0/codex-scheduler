@@ -306,6 +306,11 @@ impl SchedulerService {
 
             for job in jobs.iter_mut() {
                 if job.status == JobStatus::Running && !runner::is_runner_active(&job.id) {
+                    // Fail-closed guard: if job has unconfirmed execution, NEVER recover.
+                    if job.unconfirmed_execution {
+                        continue;
+                    }
+
                     // Check handoff grace period (15s): defer recovery while processes may be starting up
                     let elapsed = now.signed_duration_since(job.updated_at);
                     let in_grace_period = elapsed < chrono::Duration::seconds(15);
@@ -317,67 +322,21 @@ impl SchedulerService {
 
                     match lease_read {
                         runner::HandoffLeaseRead::Present(ref lease) => {
+                            if lease.unconfirmed_child {
+                                // Fail-closed Unknown: do NOT recover
+                                continue;
+                            }
                             if runner::is_reboot_detected(lease) {
                                 reboot_detected = true;
-                            }
-
-                            if !reboot_detected {
-                                // Check if detached runner process is still alive / starting up
-                                if let Some(r_pid) = lease.runner_pid {
-                                    match runner::get_process_start_time(r_pid) {
-                                        Ok(Some(actual_start)) => {
-                                            match lease.runner_start_time.as_deref() {
-                                                Some(expected) if expected == actual_start => {
-                                                    // Detached runner process is actively running / starting up.
-                                                    // Do NOT recover regardless of elapsed time.
-                                                    continue;
-                                                }
-                                                Some(_) => {
-                                                    // PID was reused by another process (start time mismatch).
-                                                    // Runner process confirmed dead.
-                                                    runner_confirmed_dead = true;
-                                                }
-                                                None => {
-                                                    // Missing objective runner start identity: fail-closed Unknown.
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                        Ok(None) => {
-                                            // Runner process has terminated.
-                                            runner_confirmed_dead = true;
-                                        }
-                                        Err(()) => {
-                                            // Process inspection failed. Fail-closed: do NOT recover.
-                                            continue;
-                                        }
+                                runner_confirmed_dead = true;
+                            } else {
+                                match runner::check_lease_liveness(lease) {
+                                    runner::LeaseLiveness::Active | runner::LeaseLiveness::Unknown => {
+                                        // Process actively running or state Unknown: do NOT recover
+                                        continue;
                                     }
-                                } else {
-                                    // Runner PID not yet recorded. Check if spawning tick is still alive.
-                                    match runner::get_process_start_time(lease.tick_pid) {
-                                        Ok(Some(actual_start)) => {
-                                            match lease.tick_start_time.as_deref() {
-                                                Some(expected) if expected == actual_start => {
-                                                    // Spawning tick is actively running. Do NOT recover.
-                                                    continue;
-                                                }
-                                                Some(_) => {
-                                                    // Spawning tick PID reused. Spawning tick confirmed dead.
-                                                    runner_confirmed_dead = true;
-                                                }
-                                                None => {
-                                                    // Missing tick start identity: fail-closed Unknown.
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                        Ok(None) => {
-                                            // Spawning tick died before recording runner PID.
-                                            runner_confirmed_dead = true;
-                                        }
-                                        Err(()) => {
-                                            continue;
-                                        }
+                                    runner::LeaseLiveness::Dead => {
+                                        runner_confirmed_dead = true;
                                     }
                                 }
                             }
@@ -391,34 +350,11 @@ impl SchedulerService {
                         }
                     }
 
-                    // If reboot was not detected, inspect recorded Codex child process
+                    // Inspect recorded Codex child process (bypassed if machine reboot was proven)
                     if !reboot_detected {
                         let info_read = runner::read_runner_info_checked(&job.id);
                         match info_read {
                             runner::RunnerInfoRead::Present(ref info) => {
-                                // If runner PID was not confirmed dead via lease, check info.runner_pid
-                                if !runner_confirmed_dead {
-                                    match runner::get_process_start_time(info.runner_pid) {
-                                        Ok(Some(actual_start)) => {
-                                            match info.runner_start_time.as_deref() {
-                                                Some(expected) if expected == actual_start => {
-                                                    // Runner process is still alive on OS! Do NOT recover.
-                                                    continue;
-                                                }
-                                                Some(_) => {}
-                                                None => {
-                                                    // Start identity unavailable: fail-closed Unknown.
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                        Ok(None) => {}
-                                        Err(()) => {
-                                            continue;
-                                        }
-                                    }
-                                }
-
                                 let liveness = runner::check_codex_process_liveness(info);
                                 if liveness != runner::LivenessState::Dead {
                                     // Child is actively running or liveness observation failed (Unknown).
@@ -596,7 +532,28 @@ impl SchedulerService {
             .ok_or_else(|| CoreError::JobNotFound(job_id.to_string()))?;
 
         // If not already claimed to Running (e.g. manual invocation), claim it now
-        if job.status != JobStatus::Running {
+        if job.status == JobStatus::Running {
+            // RATIONALE: [SCHED-JOB-007] Handoff handshake invariant before child spawn
+            // Detached runner spawned by tick must NOT spawn Codex child until parent tick
+            // has persisted the updated HandoffLease with this runner's PID.
+            let my_pid = std::process::id();
+            let mut handshake_confirmed = false;
+            for _ in 0..60 {
+                if let runner::HandoffLeaseRead::Present(lease) = runner::read_handoff_lease_checked(job_id) {
+                    if lease.runner_pid == Some(my_pid) || lease.tick_pid == my_pid {
+                        handshake_confirmed = true;
+                        break;
+                    }
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+            if !handshake_confirmed {
+                return Err(CoreError::InvalidStateTransition(format!(
+                    "Handoff handshake timeout: updated lease with runner PID {} was not established by parent tick",
+                    my_pid
+                )));
+            }
+        } else {
             job = self.store.claim_job_for_execution(job_id)?;
         }
 
@@ -635,7 +592,20 @@ impl SchedulerService {
             Ok(res) => res,
             Err(e @ crate::adapter::AdapterError::UnconfirmedTermination(_)) => {
                 // RATIONALE: [SCHED-JOB-006] Fail-closed: unconfirmed termination must NEVER convert to normal Failed
-                // Retain job in Running status, do NOT clean up evidence files, and do NOT permit second writer.
+                // Durably guard as unconfirmed in JobStore and lease so second writer is never admitted.
+                if let Some(mut lease) = runner::read_handoff_lease(&job.id) {
+                    lease.unconfirmed_child = true;
+                    let _ = runner::write_handoff_lease(&lease);
+                }
+                let mut guard_job = job;
+                guard_job.unconfirmed_execution = true;
+                if let Err(se) = self.store.update_job(&guard_job) {
+                    eprintln!("[Runner] Could not persist unconfirmed execution guard in store: {}. Holding lock.", se);
+                    // Invariant: Do NOT exit runner without durable guard
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+                    }
+                }
                 return Err(CoreError::Adapter(e));
             }
             Err(e) => ExecutionResult {

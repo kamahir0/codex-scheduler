@@ -125,6 +125,10 @@ impl CodexAdapter {
                         if let Err(ref me) = marker_res {
                             eprintln!("[Runner] Failed to persist corrupt marker for job {}: {}", jid, me);
                         }
+                        if let Some(mut lease) = crate::runner::read_handoff_lease(jid) {
+                            lease.unconfirmed_child = true;
+                            let _ = crate::runner::write_handoff_lease(&lease);
+                        }
                         return Err(AdapterError::UnconfirmedTermination(format!(
                             "Failed to persist runner metadata and could not confirm child termination for job {}: {}. Guarded as Unknown (marker written: {}).",
                             jid, e, marker_res.is_ok()

@@ -317,13 +317,13 @@ impl SchedulerService {
                                 reboot_detected = true;
                                 runner_confirmed_dead = true;
                             } else {
-                                // If machine reboot cannot be proven, unconfirmed guards must fail closed
-                                if job.unconfirmed_execution || lease.unconfirmed_child || runner::has_execution_guard(&job.id) {
-                                    continue;
-                                }
                                 match runner::check_lease_liveness(lease) {
-                                    runner::LeaseLiveness::Active | runner::LeaseLiveness::Unknown => {
-                                        // Process actively running or state Unknown: do NOT recover
+                                    runner::LeaseLiveness::Active => {
+                                        // Runner process is still active on OS
+                                        continue;
+                                    }
+                                    runner::LeaseLiveness::Unknown => {
+                                        // Runner liveness is Unknown: fail-closed
                                         continue;
                                     }
                                     runner::LeaseLiveness::Dead => {
@@ -337,55 +337,81 @@ impl SchedulerService {
                             continue;
                         }
                         runner::HandoffLeaseRead::Missing => {
-                            // No lease found: cannot prove reboot, fail-closed if unconfirmed guard exists
-                            if job.unconfirmed_execution || runner::has_execution_guard(&job.id) {
-                                continue;
+                            // No lease found: inspect runner info if present
+                            match runner::read_runner_info_checked(&job.id) {
+                                runner::RunnerInfoRead::Present(ref info) => {
+                                    match runner::check_process_identity(info.runner_pid, info.runner_start_time.as_deref()) {
+                                        runner::ProcessIdentityCheck::Matches => continue, // Still alive
+                                        runner::ProcessIdentityCheck::DeadOrMismatch => runner_confirmed_dead = true,
+                                        runner::ProcessIdentityCheck::Unknown => continue, // Fail-closed
+                                    }
+                                }
+                                runner::RunnerInfoRead::Unreadable(_) => continue,
+                                runner::RunnerInfoRead::Missing => {
+                                    if job.unconfirmed_execution || runner::has_execution_guard(&job.id) {
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     }
 
-                    // Check handoff grace period (15s): defer recovery while processes may be starting up
-                    // (bypassed if machine reboot was proven, as pre-reboot processes cannot survive OS restart)
-                    let elapsed = now.signed_duration_since(job.updated_at);
-                    let in_grace_period = elapsed < chrono::Duration::seconds(15);
+                    let lease_opt = match lease_read {
+                        runner::HandoffLeaseRead::Present(ref l) => Some(l),
+                        _ => None,
+                    };
 
-                    // Inspect recorded Codex child process (bypassed if machine reboot was proven)
+                    // RATIONALE: [SCHED-JOB-006, SCHED-JOB-007] Container-based orphan recovery
+                    // Evaluates active execution container members (PGID on Unix, Job Object on Windows).
+                    // If container has active members, maintains Running to protect background child.
+                    // If container has 0 members, confirms Case A (child never spawned / exited) -> safe recovery.
                     if !reboot_detected {
+                        // Fail-closed guard: unconfirmed execution failure on same boot must NOT recover
+                        if job.unconfirmed_execution {
+                            continue;
+                        }
+
+                        if !runner_confirmed_dead {
+                            continue;
+                        }
+
+                        match runner::check_execution_container_liveness(&job.id, lease_opt) {
+                            runner::ContainerLiveness::ActiveMembers(_) => {
+                                // Active execution members exist in container: maintain Running
+                                continue;
+                            }
+                            runner::ContainerLiveness::Unknown => {
+                                // Container observation failed: fail-closed maintain Running
+                                continue;
+                            }
+                            runner::ContainerLiveness::NoMembers => {
+                                // Proven: 0 active members in container
+                            }
+                        }
+
+                        // Inspect recorded Codex child process if RunnerInfo exists
                         let info_read = runner::read_runner_info_checked(&job.id);
                         match info_read {
                             runner::RunnerInfoRead::Present(ref info) => {
                                 let liveness = runner::check_codex_process_liveness(info);
                                 if liveness != runner::LivenessState::Dead {
-                                    // Child is actively running or liveness observation failed (Unknown).
-                                    // Fail-closed: maintain Running to prevent concurrent duplicate writers.
+                                    // Child is actively running or Unknown: maintain Running
                                     continue;
                                 }
                             }
                             runner::RunnerInfoRead::Unreadable(_) => {
-                                // Metadata read failed or corrupt: Fail-closed, maintain Running.
+                                // Corrupt metadata: fail-closed maintain Running
                                 continue;
                             }
                             runner::RunnerInfoRead::Missing => {
-                                // In the absence of runner info, we are in the handoff/startup phase.
-                                // Defer recovery during grace period while processes may still be initializing.
-                                if in_grace_period {
-                                    continue;
-                                }
-                                // If runner was not confirmed dead via durable evidence (lease),
-                                // we cannot guess it is dead solely by elapsed time. Fail-closed.
-                                if !runner_confirmed_dead {
-                                    continue;
-                                }
+                                // RunnerInfo missing and container has 0 members: Case A confirmed
                             }
                         }
                     }
 
-                    // Codex child process is definitively Dead and runner lock is released
-                    if reboot_detected {
-                        // Clear unconfirmed execution guard upon proven machine reboot
-                        job.unconfirmed_execution = false;
-                        let _ = runner::clear_execution_guard(&job.id);
-                    }
+                    // All processes are definitively Dead and runner lock is released
+                    job.unconfirmed_execution = false;
+                    let _ = runner::clear_execution_guard(&job.id);
 
                     runner::cleanup_runner_files(&job.id);
 

@@ -49,6 +49,8 @@ pub struct HandoffLease {
     pub claimed_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
     pub unconfirmed_child: bool,
+    #[serde(default)]
+    pub job_object_name: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -402,10 +404,18 @@ pub fn current_boot_identity() -> (Option<String>, Option<u64>, Option<u64>) {
     )
 }
 
+pub fn job_object_name_for(job_id: &str) -> String {
+    format!(r"Local\codex-scheduler-job-{}", job_id)
+}
+
 impl HandoffLease {
     pub fn new_initial(job_id: &str, tick_pid: u32, claimed_at: chrono::DateTime<chrono::Utc>) -> Self {
         let tick_start_time = get_process_start_time(tick_pid).ok().flatten();
         let (boot_id, boot_time, uptime_ms) = current_boot_identity();
+        #[cfg(windows)]
+        let job_object_name = Some(job_object_name_for(job_id));
+        #[cfg(not(windows))]
+        let job_object_name = None;
         Self {
             job_id: job_id.to_string(),
             tick_pid,
@@ -417,6 +427,7 @@ impl HandoffLease {
             uptime_ms,
             claimed_at,
             unconfirmed_child: false,
+            job_object_name,
         }
     }
 
@@ -424,6 +435,10 @@ impl HandoffLease {
         let mut updated = self.clone();
         updated.runner_pid = Some(runner_pid);
         updated.runner_start_time = runner_start_time;
+        #[cfg(windows)]
+        if updated.job_object_name.is_none() {
+            updated.job_object_name = Some(job_object_name_for(&self.job_id));
+        }
         updated
     }
 }
@@ -469,6 +484,7 @@ pub fn write_corrupt_runner_info_marker(job_id: &str, unconfirmed_pid: u32) -> R
 // Test injection hooks for deterministic failure simulation
 static INJECT_GUARD_WRITE_FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static INJECT_GUARD_CLEAR_FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static INJECT_JOB_OBJECT_ASSIGN_FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn set_inject_guard_write_failure(fail: bool) {
     INJECT_GUARD_WRITE_FAIL.store(fail, std::sync::atomic::Ordering::SeqCst);
@@ -476,6 +492,10 @@ pub fn set_inject_guard_write_failure(fail: bool) {
 
 pub fn set_inject_guard_clear_failure(fail: bool) {
     INJECT_GUARD_CLEAR_FAIL.store(fail, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn set_inject_job_object_assign_failure(fail: bool) {
+    INJECT_JOB_OBJECT_ASSIGN_FAIL.store(fail, std::sync::atomic::Ordering::SeqCst);
 }
 
 // RATIONALE: [SCHED-JOB-006] Write-ahead durable execution guard before child process spawn
@@ -500,12 +520,6 @@ pub fn write_execution_guard(job_id: &str) -> Result<(), RunnerError> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     fs::write(&tmp_path, content_str)?;
     fs::rename(&tmp_path, &path)?;
-
-    // Also update HandoffLease unconfirmed_child if lease exists
-    if let Some(mut lease) = read_handoff_lease(job_id) {
-        lease.unconfirmed_child = true;
-        let _ = write_handoff_lease(&lease);
-    }
     Ok(())
 }
 
@@ -520,12 +534,6 @@ pub fn clear_execution_guard(job_id: &str) -> Result<(), RunnerError> {
     let path = runner_guard_path(job_id)?;
     if path.exists() {
         fs::remove_file(path)?;
-    }
-    if let Some(mut lease) = read_handoff_lease(job_id) {
-        if lease.unconfirmed_child {
-            lease.unconfirmed_child = false;
-            let _ = write_handoff_lease(&lease);
-        }
     }
     Ok(())
 }
@@ -552,9 +560,9 @@ pub enum LeaseLiveness {
     Unknown,
 }
 
-/// Evaluates tri-state liveness for a HandoffLease (Active, Dead, Unknown).
+/// Evaluates tri-state liveness for a HandoffLease holder process (Active, Dead, Unknown).
 /// Invariants:
-/// - unconfirmed_child guard -> Unknown (fail-closed)
+/// - unconfirmed_child guard -> Unknown (fail-closed unless reboot detected)
 /// - Reboot detected -> Dead
 /// - Identity missing or OS inspection error -> Unknown (fail-closed, never assumed Dead)
 /// - Process does not exist or start identity mismatch (PID reuse) -> Dead
@@ -1030,26 +1038,365 @@ pub fn get_runner_lock_holder(job_id: &str) -> Option<u32> {
     val.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32)
 }
 
-/// Evaluates comprehensive execution liveness for a job across Runner lock and Codex child process.
+// RATIONALE: [SCHED-JOB-006] Process Group container setup on Unix
+// Ensures current runner process is leader of its own process group (PGID == runner_pid).
+// Detached runner spawned with process_group(0) is already leader; manual run-job path
+// calls this before spawning Codex child to guarantee runner-owned container.
+#[cfg(unix)]
+pub fn ensure_runner_process_group() -> Result<u32, RunnerError> {
+    unsafe extern "C" {
+        fn setpgid(pid: i32, pgid: i32) -> i32;
+        fn getpgrp() -> i32;
+        fn getpid() -> i32;
+    }
+    unsafe {
+        let pid = getpid();
+        let pgrp = getpgrp();
+        if pgrp != pid {
+            let res = setpgid(0, 0);
+            if res != 0 {
+                let err = std::io::Error::last_os_error();
+                let new_pgrp = getpgrp();
+                if new_pgrp != pid {
+                    return Err(RunnerError::Io(err));
+                }
+            }
+        }
+        Ok(getpgrp() as u32)
+    }
+}
+
+#[cfg(not(unix))]
+pub fn ensure_runner_process_group() -> Result<u32, RunnerError> {
+    Ok(std::process::id())
+}
+
+// RATIONALE: [SCHED-JOB-006] Process Group container inspection on Unix
+// Queries surviving processes belonging to PGID == pgid using pgrep -g.
+// Verifies runner process identity beforehand to prevent misattributing unrelated processes on PID reuse.
+#[cfg(unix)]
+pub fn find_surviving_pgid_pids(pgid: u32, expected_runner_start: Option<&str>) -> Result<Vec<u32>, ()> {
+    if pgid == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Step 1: Check runner PID identity to detect PID reuse
+    match get_process_start_time(pgid) {
+        Ok(Some(actual_start)) => {
+            // A process with PID == pgid is currently running on the system.
+            match expected_runner_start {
+                Some(expected) => {
+                    if actual_start != expected {
+                        // PID reuse detected: pgid was reused by a new unrelated process.
+                        // Any process group led by this unrelated process does NOT belong to our job.
+                        return Ok(Vec::new());
+                    }
+                }
+                None => {
+                    // Expected runner start time is missing: cannot safely verify identity -> fail-closed Unknown
+                    return Err(());
+                }
+            }
+        }
+        Ok(None) => {
+            // Runner process is definitively dead, and PID has not been reused by any running process.
+        }
+        Err(()) => {
+            // OS inspection failed: fail-closed Unknown
+            return Err(());
+        }
+    }
+
+    // Step 2: Query all processes belonging to PGID == pgid using pgrep -g
+    let output = match std::process::Command::new("pgrep")
+        .arg("-g")
+        .arg(pgid.to_string())
+        .output()
+    {
+        Ok(out) => out,
+        Err(_) => return Err(()), // If pgrep fails to execute, fail-closed Unknown
+    };
+
+    if !output.status.success() {
+        if output.status.code() == Some(1) {
+            // pgrep returns 1 when no matching processes exist
+            return Ok(Vec::new());
+        }
+        return Err(());
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut surviving = Vec::new();
+    for line in text.lines() {
+        if let Ok(pid) = line.trim().parse::<u32>() {
+            match get_process_start_time(pid) {
+                Ok(Some(_)) => {
+                    surviving.push(pid);
+                }
+                _ => {} // Dead or defunct
+            }
+        }
+    }
+
+    Ok(surviving)
+}
+
+#[cfg(not(unix))]
+pub fn find_surviving_pgid_pids(_pgid: u32, _expected_runner_start: Option<&str>) -> Result<Vec<u32>, ()> {
+    Ok(Vec::new())
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct SendHandle(windows::Win32::Foundation::HANDLE);
+#[cfg(windows)]
+unsafe impl Send for SendHandle {}
+
+#[cfg(windows)]
+static RUNNER_JOB_OBJECT_HANDLE: std::sync::Mutex<Option<SendHandle>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(windows)]
+pub fn setup_runner_job_object(job_id: &str) -> Result<String, RunnerError> {
+    if INJECT_JOB_OBJECT_ASSIGN_FAIL.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(RunnerError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Injected Job Object assign failure",
+        )));
+    }
+
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    let name = job_object_name_for(job_id);
+    let wide_name = HSTRING::from(&name);
+
+    unsafe {
+        let handle = CreateJobObjectW(None, PCWSTR(wide_name.as_ptr()))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+
+        let assign_res = AssignProcessToJobObject(handle, GetCurrentProcess());
+        if let Err(e) = assign_res {
+            let _ = CloseHandle(handle);
+            return Err(RunnerError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to assign runner to Job Object {}: {}", name, e),
+            )));
+        }
+
+        if let Ok(mut lock) = RUNNER_JOB_OBJECT_HANDLE.lock() {
+            if let Some(old) = lock.replace(SendHandle(handle)) {
+                let _ = CloseHandle(old.0);
+            }
+        }
+
+        Ok(name)
+    }
+}
+
+#[cfg(windows)]
+pub fn find_surviving_job_object_pids(job_object_name: &str) -> Result<Vec<u32>, ()> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND};
+    use windows::Win32::System::JobObjects::{
+        OpenJobObjectW, QueryInformationJobObject, JobObjectBasicProcessIdList,
+        JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    };
+    const JOB_OBJECT_QUERY: u32 = 0x0004;
+
+    let wide_name = HSTRING::from(job_object_name);
+
+    unsafe {
+        let handle = match OpenJobObjectW(JOB_OBJECT_QUERY, false, PCWSTR(wide_name.as_ptr())) {
+            Ok(h) => h,
+            Err(_) => {
+                let err = GetLastError();
+                if err == ERROR_FILE_NOT_FOUND {
+                    return Ok(Vec::new());
+                }
+                return Err(());
+            }
+        };
+
+        let mut buffer = vec![0u8; 4096];
+        let mut return_len = 0u32;
+        let query_res = QueryInformationJobObject(
+            handle,
+            JobObjectBasicProcessIdList,
+            buffer.as_mut_ptr() as *mut std::ffi::c_void,
+            buffer.len() as u32,
+            Some(&mut return_len),
+        );
+        let _ = CloseHandle(handle);
+
+        if query_res.is_err() {
+            return Err(());
+        }
+
+        let list = &*(buffer.as_ptr() as *const JOBOBJECT_BASIC_PROCESS_ID_LIST);
+        let count = list.NumberOfProcessIdsInList as usize;
+        let mut pids = Vec::new();
+        let ptr_list = std::slice::from_raw_parts(list.ProcessIdList.as_ptr(), count);
+        for &pid in ptr_list {
+            pids.push(pid as u32);
+        }
+        Ok(pids)
+    }
+}
+
+#[cfg(not(windows))]
+pub fn setup_runner_job_object(job_id: &str) -> Result<String, RunnerError> {
+    if INJECT_JOB_OBJECT_ASSIGN_FAIL.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(RunnerError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Injected Job Object assign failure",
+        )));
+    }
+    Ok(job_object_name_for(job_id))
+}
+
+#[cfg(not(windows))]
+pub fn find_surviving_job_object_pids(_job_object_name: &str) -> Result<Vec<u32>, ()> {
+    Ok(Vec::new())
+}
+
+// RATIONALE: [SCHED-JOB-006] Unified execution container setup before Codex child process spawn
+// On Unix: establishes runner-owned process group (PGID == runner_pid) so child inherits PGID.
+// On Windows: creates named Job Object and assigns runner process so child inherits Job Object.
+// Fails closed if container setup or assignment fails, preventing child spawn.
+pub fn setup_runner_execution_container(_job_id: &str) -> Result<(), RunnerError> {
+    #[cfg(unix)]
+    {
+        ensure_runner_process_group()?;
+        if INJECT_JOB_OBJECT_ASSIGN_FAIL.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RunnerError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Injected Job Object assign failure",
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    {
+        let name = setup_runner_job_object(_job_id)?;
+        if let Some(mut lease) = read_handoff_lease(_job_id) {
+            lease.job_object_name = Some(name);
+            let _ = write_handoff_lease(&lease);
+        }
+        Ok(())
+    }
+
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        if INJECT_JOB_OBJECT_ASSIGN_FAIL.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RunnerError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Injected Job Object assign failure",
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerLiveness {
+    ActiveMembers(usize),
+    NoMembers,
+    Unknown,
+}
+
+// RATIONALE: [SCHED-JOB-006, SCHED-JOB-007] Execution container liveness query
+// Objectively distinguishes Case A (0 surviving members -> safe recovery) from
+// Case B (active members exist -> retain Running / block second writer).
+// Evaluates machine reboot first (boot identity mismatch guarantees all pre-reboot containers dead).
+pub fn check_execution_container_liveness(
+    job_id: &str,
+    lease: Option<&HandoffLease>,
+) -> ContainerLiveness {
+    // 1. Proven machine reboot: all previous OS containers are dead
+    if let Some(l) = lease {
+        if is_reboot_detected(l) {
+            return ContainerLiveness::NoMembers;
+        }
+    }
+
+    // 2. Windows: query named Job Object
+    #[cfg(windows)]
+    {
+        let job_obj_name = lease
+            .and_then(|l| l.job_object_name.clone())
+            .unwrap_or_else(|| job_object_name_for(job_id));
+
+        match find_surviving_job_object_pids(&job_obj_name) {
+            Ok(pids) => {
+                if pids.is_empty() {
+                    ContainerLiveness::NoMembers
+                } else {
+                    ContainerLiveness::ActiveMembers(pids.len())
+                }
+            }
+            Err(()) => ContainerLiveness::Unknown,
+        }
+    }
+
+    // 3. Unix: query runner-owned Process Group
+    #[cfg(unix)]
+    {
+        let (r_pid, r_start) = match lease {
+            Some(l) => match l.runner_pid {
+                Some(pid) => (pid, l.runner_start_time.clone()),
+                None => {
+                    return ContainerLiveness::NoMembers;
+                }
+            },
+            None => {
+                match read_runner_info_checked(job_id) {
+                    RunnerInfoRead::Present(info) => (info.runner_pid, info.runner_start_time),
+                    RunnerInfoRead::Unreadable(_) => return ContainerLiveness::Unknown,
+                    RunnerInfoRead::Missing => return ContainerLiveness::NoMembers,
+                }
+            }
+        };
+
+        match find_surviving_pgid_pids(r_pid, r_start.as_deref()) {
+            Ok(pids) => {
+                if pids.is_empty() {
+                    ContainerLiveness::NoMembers
+                } else {
+                    ContainerLiveness::ActiveMembers(pids.len())
+                }
+            }
+            Err(()) => ContainerLiveness::Unknown,
+        }
+    }
+
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        ContainerLiveness::NoMembers
+    }
+}
+
+/// Evaluates comprehensive execution liveness for a job across Runner lock, OS container, and Codex child.
 pub fn get_job_liveness(job_id: &str) -> LivenessState {
     if is_runner_active(job_id) {
         return LivenessState::RunnerActive;
     }
-    match read_handoff_lease_checked(job_id) {
-        HandoffLeaseRead::Present(ref lease) => {
-            if is_reboot_detected(lease) {
-                return LivenessState::Dead;
-            }
-            if lease.unconfirmed_child || has_execution_guard(job_id) {
-                return LivenessState::Unknown;
-            }
-        }
-        _ => {
-            if has_execution_guard(job_id) {
-                return LivenessState::Unknown;
-            }
+    let lease_opt = read_handoff_lease(job_id);
+    if let Some(ref lease) = lease_opt {
+        if is_reboot_detected(lease) {
+            return LivenessState::Dead;
         }
     }
+
+    match check_execution_container_liveness(job_id, lease_opt.as_ref()) {
+        ContainerLiveness::ActiveMembers(_) => return LivenessState::ChildActive,
+        ContainerLiveness::Unknown => return LivenessState::Unknown,
+        ContainerLiveness::NoMembers => {}
+    }
+
     match read_runner_info_checked(job_id) {
         RunnerInfoRead::Present(info) => check_codex_process_liveness(&info),
         RunnerInfoRead::Unreadable(_) => LivenessState::Unknown,

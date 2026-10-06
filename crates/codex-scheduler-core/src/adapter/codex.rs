@@ -90,10 +90,18 @@ impl CodexAdapter {
             cmd.env("PATH", new_path);
         }
 
-        // RATIONALE: [SCHED-JOB-006] Write-ahead durable execution guard before child process spawn
-        // Persists durable evidence that a child process may exist BEFORE calling spawn().
-        // If establishing the guard fails, child process MUST NOT be spawned.
+        // RATIONALE: [SCHED-JOB-006] Setup execution container and write-ahead guard before child spawn
+        // Establishes runner-owned execution container (Process Group on Unix, Job Object on Windows)
+        // and persists durable execution guard BEFORE spawning child process.
+        // If container setup or guard write fails, child process MUST NOT be spawned.
         if let Some(jid) = job_id {
+            crate::runner::setup_runner_execution_container(jid).map_err(|e| {
+                AdapterError::ProcessError(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to establish execution container for job {}: {}", jid, e),
+                ))
+            })?;
+
             crate::runner::write_execution_guard(jid).map_err(|e| {
                 AdapterError::ProcessError(std::io::Error::new(
                     std::io::ErrorKind::Other,
@@ -102,6 +110,9 @@ impl CodexAdapter {
             })?;
         }
 
+        // RATIONALE: [SCHED-JOB-006] Child process inherits runner execution container
+        // On Unix, cmd does NOT set process_group(0) so child inherits runner-owned PGID.
+        // On Windows, child automatically inherits the Job Object assigned to the runner.
         let mut child = cmd.spawn().map_err(|e| {
             if let Some(jid) = job_id {
                 let _ = crate::runner::clear_execution_guard(jid);

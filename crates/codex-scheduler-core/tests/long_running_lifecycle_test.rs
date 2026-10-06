@@ -321,6 +321,7 @@ async fn test_orphan_recovery_on_crashed_runner() {
         uptime_ms: None,
         claimed_at: now - Duration::minutes(5),
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -908,6 +909,7 @@ async fn test_claim_to_lock_handoff_grace_period_prevents_premature_orphan_recov
         uptime_ms: None,
         claimed_at: now - chrono::Duration::seconds(20),
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1192,6 +1194,7 @@ async fn test_durable_lease_reboot_recovery() {
         uptime_ms: Some(u64::MAX), // Exceedingly high uptime ensures current_uptime < lease_uptime on Windows
         claimed_at: Utc::now() - chrono::Duration::minutes(5),
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1241,6 +1244,7 @@ async fn test_durable_lease_surviving_runner_not_recovered() {
         uptime_ms: cur_uptime,
         claimed_at: Utc::now() - chrono::Duration::minutes(5),
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1302,6 +1306,7 @@ async fn test_runner_lock_drop_preserves_foreign_execution_evidence() {
         uptime_ms: None,
         claimed_at: Utc::now() - chrono::Duration::minutes(5),
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1431,6 +1436,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
         uptime_ms: Some(10), // Small pre-reboot uptime
         claimed_at: now - chrono::Duration::hours(1),
         unconfirmed_child: false,
+        job_object_name: None,
     };
     assert!(
         runner::is_reboot_detected(&lease_post_reboot_longer),
@@ -1449,6 +1455,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
         uptime_ms: Some(1), // lease uptime is 1ms, current uptime is certainly >= 1ms
         claimed_at: now,
         unconfirmed_child: false,
+        job_object_name: None,
     };
     assert!(
         !runner::is_reboot_detected(&lease_advance),
@@ -1467,6 +1474,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
         uptime_ms: Some(u64::MAX),
         claimed_at: now,
         unconfirmed_child: false,
+        job_object_name: None,
     };
     assert!(
         !runner::is_reboot_detected(&lease_uptime_only),
@@ -1485,6 +1493,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
         uptime_ms: None,
         claimed_at: now,
         unconfirmed_child: false,
+        job_object_name: None,
     };
     if runner::get_system_boot_id().is_some() {
         assert!(runner::is_reboot_detected(&lease_diff_bid));
@@ -1655,6 +1664,7 @@ async fn test_pid_reuse_rejection_in_reconcile() {
         uptime_ms: None,
         claimed_at: now - chrono::Duration::minutes(5),
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -1829,6 +1839,7 @@ fn test_lease_liveness_tri_state() {
         uptime_ms: runner::get_system_uptime_ms().ok(),
         claimed_at: now,
         unconfirmed_child: false,
+        job_object_name: None,
     };
     assert_eq!(runner::check_lease_liveness(&active_lease), runner::LeaseLiveness::Active);
 
@@ -1844,6 +1855,7 @@ fn test_lease_liveness_tri_state() {
         uptime_ms: runner::get_system_uptime_ms().ok(),
         claimed_at: now,
         unconfirmed_child: false,
+        job_object_name: None,
     };
     assert_eq!(runner::check_lease_liveness(&dead_lease), runner::LeaseLiveness::Dead);
 
@@ -1859,6 +1871,7 @@ fn test_lease_liveness_tri_state() {
         uptime_ms: None,
         claimed_at: now,
         unconfirmed_child: false,
+        job_object_name: None,
     };
     assert_eq!(runner::check_lease_liveness(&unknown_lease), runner::LeaseLiveness::Unknown);
 
@@ -1874,6 +1887,7 @@ fn test_lease_liveness_tri_state() {
         uptime_ms: None,
         claimed_at: now,
         unconfirmed_child: true,
+        job_object_name: None,
     };
     assert_eq!(runner::check_lease_liveness(&unconfirmed_child_lease), runner::LeaseLiveness::Unknown);
 
@@ -1889,6 +1903,7 @@ fn test_lease_liveness_tri_state() {
         uptime_ms: Some(u64::MAX),
         claimed_at: now,
         unconfirmed_child: true,
+        job_object_name: None,
     };
     assert_eq!(runner::check_lease_liveness(&unconfirmed_child_reboot_lease), runner::LeaseLiveness::Dead);
 }
@@ -1938,6 +1953,7 @@ async fn test_unconfirmed_execution_and_child_reboot_recovery() {
         uptime_ms: cur_uptime_ms.map(|u| u.saturating_sub(1000)),
         claimed_at: now - chrono::Duration::minutes(10),
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease_same_boot).unwrap();
 
@@ -1961,6 +1977,7 @@ async fn test_unconfirmed_execution_and_child_reboot_recovery() {
         uptime_ms: Some(u64::MAX), // Monotonic uptime rollback on Windows / Linux
         claimed_at: now - chrono::Duration::minutes(10),
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease_reboot).unwrap();
 
@@ -2012,6 +2029,7 @@ async fn test_unconfirmed_execution_and_child_reboot_recovery() {
         uptime_ms: cur_uptime_ms.map(|u| u.saturating_sub(1000)),
         claimed_at: now - chrono::Duration::minutes(10),
         unconfirmed_child: true,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease_child_same_boot).unwrap();
 
@@ -2031,6 +2049,7 @@ async fn test_unconfirmed_execution_and_child_reboot_recovery() {
         uptime_ms: Some(u64::MAX),
         claimed_at: now - chrono::Duration::minutes(10),
         unconfirmed_child: true,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease_child_reboot).unwrap();
 
@@ -2085,6 +2104,7 @@ async fn test_run_job_runner_handshake_start_identity_and_guard_rejections() {
         uptime_ms: runner::get_system_uptime_ms().ok(),
         claimed_at: now,
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease_mismatched).unwrap();
 
@@ -2139,7 +2159,8 @@ async fn test_run_job_runner_handshake_start_identity_and_guard_rejections() {
         boot_time: None,
         uptime_ms: None,
         claimed_at: now,
-        unconfirmed_child: true, // guard!
+        unconfirmed_child: true,
+        job_object_name: None, // guard!
     };
     runner::write_handoff_lease(&lease_unconfirmed_child).unwrap();
 
@@ -2174,6 +2195,7 @@ async fn test_run_job_runner_handshake_start_identity_and_guard_rejections() {
         uptime_ms: runner::get_system_uptime_ms().ok(),
         claimed_at: now,
         unconfirmed_child: false,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease_legit).unwrap();
 
@@ -2389,6 +2411,7 @@ async fn test_unconfirmed_execution_windows_proven_reboot_recovery() {
         uptime_ms: Some(10), // Small pre-reboot uptime (< current system uptime)
         claimed_at: now - chrono::Duration::minutes(10),
         unconfirmed_child: true,
+        job_object_name: None,
     };
     runner::write_handoff_lease(&lease).unwrap();
 
@@ -2418,6 +2441,554 @@ async fn test_unconfirmed_execution_windows_proven_reboot_recovery() {
 
     runner::cleanup_runner_files(&job.id);
     runner::cleanup_runner_files(&next_job.id);
+}
+
+#[cfg(unix)]
+fn spawn_dead_runner_with_alive_child() -> (u32, u32) {
+    let out = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(r#"
+import os, subprocess
+os.setpgrp()
+runner_pid = os.getpid()
+child = subprocess.Popen(["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+print(f"{runner_pid}:{child.pid}", flush=True)
+"#)
+        .output()
+        .expect("spawn helper runner");
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let parts: Vec<&str> = text.split(':').collect();
+    let r_pid: u32 = parts[0].parse().unwrap();
+    let c_pid: u32 = parts[1].parse().unwrap();
+    (r_pid, c_pid)
+}
+
+// Failure Matrix 1: evidence/container 確立前に runner crash -> recovery 可能
+#[tokio::test]
+async fn test_failure_matrix_01_runner_crash_before_container_established() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-matrix-01";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Lease established by tick, but runner crashes before setting up container or guard
+    let dead_runner_pid = 9999991;
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: 9999990,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(dead_runner_pid),
+        runner_start_time: Some("fake_runner_start".to_string()),
+        boot_id: runner::get_system_boot_id(),
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: runner::get_system_uptime_ms().ok(),
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: false,
+        job_object_name: None,
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    // Reconcile: runner is dead, 0 container members, no guard -> safe orphan recovery!
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 1, "Job must be recovered when runner dies before container established");
+    assert_ne!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    runner::cleanup_runner_files(&job.id);
+}
+
+// Failure Matrix 2: container 確立後・Codex spawn 前に runner crash -> recovery 可能
+#[tokio::test]
+async fn test_failure_matrix_02_runner_crash_after_container_before_spawn() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-matrix-02";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Runner established container and wrote write-ahead execution guard
+    let dead_runner_pid = 9999992;
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: 9999990,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(dead_runner_pid),
+        runner_start_time: Some("fake_runner_start".to_string()),
+        boot_id: runner::get_system_boot_id(),
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: runner::get_system_uptime_ms().ok(),
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: false,
+        job_object_name: None,
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+    runner::write_execution_guard(&job.id).unwrap();
+    assert!(runner::has_execution_guard(&job.id));
+
+    // Runner crashed before calling cmd.spawn().
+    // Container has 0 members, RunnerInfo is missing.
+    // Reconcile must definitively confirm Case A (no members) and safely recover the job!
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 1, "Job must be recovered when runner dies before child spawn");
+    assert_ne!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+    assert!(!runner::has_execution_guard(&job.id), "Guard must be cleared upon recovery");
+
+    // Same session job can now be claimed!
+    let next_job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(1),
+        None,
+    )
+    .unwrap();
+    store.insert_job(next_job.clone()).unwrap();
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert_eq!(claimed.len(), 1, "Second job must be claimable after orphan recovery");
+
+    runner::cleanup_runner_files(&job.id);
+    runner::cleanup_runner_files(&next_job.id);
+}
+
+// Failure Matrix 3: Codex spawn 直後・RunnerInfo 保存前に runner crash -> live member あり -> Running 維持 -> second writer 禁止
+#[tokio::test]
+async fn test_failure_matrix_03_runner_crash_after_spawn_before_runner_info() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-matrix-03";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    #[cfg(unix)]
+    {
+        // Spawn a helper runner that created its own process group, spawned child, then died
+        let (dead_runner_pid, live_child_pid) = spawn_dead_runner_with_alive_child();
+
+        // Runner died before saving RunnerInfo (RunnerInfo is Missing)
+        assert!(matches!(runner::read_runner_info_checked(&job.id), runner::RunnerInfoRead::Missing));
+
+        // Lease records the runner PID
+        let lease = runner::HandoffLease {
+            job_id: job.id.clone(),
+            tick_pid: std::process::id(),
+            tick_start_time: runner::get_process_start_time(std::process::id()).ok().flatten(),
+            runner_pid: Some(dead_runner_pid),
+            runner_start_time: None, // Dead runner
+            boot_id: runner::get_system_boot_id(),
+            boot_time: runner::get_system_boot_time().ok(),
+            uptime_ms: runner::get_system_uptime_ms().ok(),
+            claimed_at: now - chrono::Duration::minutes(10),
+            unconfirmed_child: false,
+            job_object_name: None,
+        };
+        runner::write_handoff_lease(&lease).unwrap();
+        runner::write_execution_guard(&job.id).unwrap();
+
+        // Reconcile: live child member exists in runner's process group!
+        // Definitively confirms Case B: must NOT recover, must maintain Running!
+        let recovered = service.reconcile_running_jobs().unwrap();
+        assert!(recovered.is_empty(), "Job must maintain Running while child is alive in container");
+        assert_eq!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+        // Same session second writer must be blocked!
+        let next_job = Job::new(
+            ProviderType::Codex,
+            session_id.to_string(),
+            temp.path().to_path_buf(),
+            Some("continue".to_string()),
+            now - chrono::Duration::minutes(1),
+            None,
+        )
+        .unwrap();
+        store.insert_job(next_job.clone()).unwrap();
+
+        let claimed = store.claim_due_jobs(now).unwrap();
+        assert!(claimed.is_empty(), "Second writer must be blocked while child is alive");
+
+        let manual_claim = store.claim_job_for_execution(&next_job.id);
+        assert!(matches!(manual_claim, Err(codex_scheduler_core::store::StoreError::SessionBusy(_))));
+
+        // Clean up the live child
+        runner::kill_process(live_child_pid);
+        let _ = runner::safe_terminate_and_confirm(live_child_pid, None);
+
+        // Now child is dead: next reconcile proves 0 container members and safely recovers!
+        let recovered_after = service.reconcile_running_jobs().unwrap();
+        assert_eq!(recovered_after.len(), 1, "Job must be recovered once container members exit");
+        assert_ne!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+        runner::cleanup_runner_files(&job.id);
+        runner::cleanup_runner_files(&next_job.id);
+    }
+}
+
+// Failure Matrix 4: RunnerInfo 保存後に runner crash -> child alive なら Running 維持
+#[tokio::test]
+async fn test_failure_matrix_04_runner_crash_after_runner_info_saved_child_alive() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-matrix-04";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Use current process as live child
+    let child_pid = std::process::id();
+    let child_start = runner::get_process_start_time(child_pid).unwrap().unwrap();
+
+    let info = runner::RunnerInfo {
+        job_id: job.id.clone(),
+        session_id: session_id.to_string(),
+        runner_pid: 9999993, // Dead runner
+        runner_start_time: Some("fake_runner_start".to_string()),
+        runner_started_at: now - chrono::Duration::minutes(10),
+        codex_pid: Some(child_pid),
+        codex_start_time: Some(child_start),
+    };
+    runner::write_runner_info(&info).unwrap();
+
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert!(recovered.is_empty(), "Job must maintain Running while child is alive");
+    assert_eq!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // Second writer is blocked
+    let next_job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(1),
+        None,
+    )
+    .unwrap();
+    store.insert_job(next_job.clone()).unwrap();
+    assert!(store.claim_due_jobs(now).unwrap().is_empty());
+
+    runner::cleanup_runner_files(&job.id);
+    runner::cleanup_runner_files(&next_job.id);
+}
+
+// Failure Matrix 5: child 正常終了後に runner crash -> recovery 可能
+#[tokio::test]
+async fn test_failure_matrix_05_child_exited_normally_runner_crash_recovery() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-matrix-05";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Child PID and runner PID are both dead
+    let info = runner::RunnerInfo {
+        job_id: job.id.clone(),
+        session_id: session_id.to_string(),
+        runner_pid: 9999994,
+        runner_start_time: Some("fake_runner_start".to_string()),
+        runner_started_at: now - chrono::Duration::minutes(10),
+        codex_pid: Some(9999995), // Child has exited
+        codex_start_time: Some("fake_child_start".to_string()),
+    };
+    runner::write_runner_info(&info).unwrap();
+
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 1, "Job must be recovered when child and runner are both dead");
+    assert_ne!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    runner::cleanup_runner_files(&job.id);
+}
+
+// Failure Matrix 6: process identity observation Unknown -> fail-closed
+#[tokio::test]
+async fn test_failure_matrix_06_process_identity_observation_unknown_fails_closed() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-matrix-06";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Current process PID but missing expected start time -> Unknown
+    let my_pid = std::process::id();
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: my_pid,
+        tick_start_time: None,
+        runner_pid: Some(my_pid),
+        runner_start_time: None, // Missing identity -> Unknown
+        boot_id: runner::get_system_boot_id(),
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: runner::get_system_uptime_ms().ok(),
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: false,
+        job_object_name: None,
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert!(recovered.is_empty(), "Reconcile must fail closed when process identity is Unknown");
+    assert_eq!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    runner::cleanup_runner_files(&job.id);
+}
+
+// Failure Matrix 7: PID reuse -> unrelated process を誤認しない
+#[tokio::test]
+async fn test_failure_matrix_07_pid_reuse_does_not_misidentify_unrelated_process() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-matrix-07";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
+
+    // Use current process PID, but an intentionally mismatched start time (simulating PID reuse)
+    let my_pid = std::process::id();
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: 9999990,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(my_pid),
+        runner_start_time: Some("ancient_mismatched_start_identity".to_string()),
+        boot_id: runner::get_system_boot_id(),
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: runner::get_system_uptime_ms().ok(),
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: false,
+        job_object_name: None,
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    // Reconcile: PID reuse is detected, runner is considered Dead and not confused with our process
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 1, "Job must be safely recovered when PID reuse is detected");
+    assert_ne!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+    runner::cleanup_runner_files(&job.id);
+}
+
+// Failure Matrix 8: proven machine reboot -> safe recovery
+#[tokio::test]
+async fn test_failure_matrix_08_proven_machine_reboot_safe_recovery() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-matrix-08";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    job.unconfirmed_execution = true;
+    store.insert_job(job.clone()).unwrap();
+
+    runner::write_execution_guard(&job.id).unwrap();
+
+    // Lease with proven reboot evidence (mismatched boot timestamp)
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: 9999991,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(9999992),
+        runner_start_time: Some("fake_runner_start".to_string()),
+        boot_id: Some("ancient_proven_boot_id".to_string()),
+        boot_time: Some(1), // Mismatched boot timestamp indicates reboot
+        uptime_ms: Some(u64::MAX),
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: true,
+        job_object_name: None,
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    assert!(runner::is_reboot_detected(&lease));
+
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 1, "Proven reboot must safely recover job");
+    assert_ne!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+    assert!(!store.get_job(&job.id).unwrap().unwrap().unconfirmed_execution);
+    assert!(!runner::has_execution_guard(&job.id));
+
+    runner::cleanup_runner_files(&job.id);
+}
+
+// Failure Matrix 9: duplicate tick / manual run-job -> same-session second writer なし
+#[tokio::test]
+async fn test_failure_matrix_09_duplicate_tick_or_manual_run_job_blocks_second_writer() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-matrix-09";
+    let mut job1 = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job1.set_status(JobStatus::Running);
+    store.insert_job(job1.clone()).unwrap();
+
+    // Lock held by current process for job1
+    let lock = runner::RunnerLock::acquire(&job1.id).unwrap();
+
+    // Second job in same session
+    let job2 = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    store.insert_job(job2.clone()).unwrap();
+
+    // Tick claim must be blocked
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert!(claimed.is_empty(), "Duplicate tick must not claim job in active session");
+
+    // Manual claim must be rejected with SessionBusy
+    let manual = store.claim_job_for_execution(&job2.id);
+    assert!(matches!(manual, Err(codex_scheduler_core::store::StoreError::SessionBusy(_))));
+
+    // Manual run_job_runner must also be rejected
+    let runner_res = service.run_job_runner(&job2.id).await;
+    assert!(matches!(
+        runner_res,
+        Err(codex_scheduler_core::CoreError::SessionBusy(_))
+            | Err(codex_scheduler_core::CoreError::Store(codex_scheduler_core::store::StoreError::SessionBusy(_)))
+    ));
+
+    drop(lock);
+    runner::cleanup_runner_files(&job1.id);
+    runner::cleanup_runner_files(&job2.id);
+}
+
+// Failure Matrix 10: Windows Job Object assign 失敗 -> Codex child を spawn しない
+#[tokio::test]
+async fn test_failure_matrix_10_windows_job_object_assign_failure_aborts_before_spawn() {
+    let temp = tempdir().unwrap();
+    let job_id = "job-matrix-10";
+
+    // Inject Job Object assign failure
+    runner::set_inject_job_object_assign_failure(true);
+
+    // Call setup_runner_execution_container directly
+    let setup_res = runner::setup_runner_execution_container(job_id);
+    assert!(setup_res.is_err(), "Container setup must fail when Job Object assign fails");
+
+    // Call adapter resume session with job_id
+    let adapter = CodexAdapter::new();
+    let spawn_res = adapter
+        .execute_resume_streaming_with_job(
+            "sess-matrix-10",
+            temp.path(),
+            "prompt",
+            None,
+            Some(job_id),
+        )
+        .await;
+
+    assert!(spawn_res.is_err(), "Adapter must refuse to spawn Codex child if container assignment fails");
+    assert!(!runner::has_execution_guard(job_id), "Guard must not remain active if spawn failed");
+
+    // Reset injection hook
+    runner::set_inject_job_object_assign_failure(false);
+
+    // After reset, container setup succeeds
+    assert!(runner::setup_runner_execution_container(job_id).is_ok());
+    runner::cleanup_runner_files(job_id);
 }
 
 

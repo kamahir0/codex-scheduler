@@ -90,7 +90,24 @@ impl CodexAdapter {
             cmd.env("PATH", new_path);
         }
 
-        let mut child = cmd.spawn().map_err(AdapterError::ProcessError)?;
+        // RATIONALE: [SCHED-JOB-006] Write-ahead durable execution guard before child process spawn
+        // Persists durable evidence that a child process may exist BEFORE calling spawn().
+        // If establishing the guard fails, child process MUST NOT be spawned.
+        if let Some(jid) = job_id {
+            crate::runner::write_execution_guard(jid).map_err(|e| {
+                AdapterError::ProcessError(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to establish write-ahead execution guard for job {}: {}", jid, e),
+                ))
+            })?;
+        }
+
+        let mut child = cmd.spawn().map_err(|e| {
+            if let Some(jid) = job_id {
+                let _ = crate::runner::clear_execution_guard(jid);
+            }
+            AdapterError::ProcessError(e)
+        })?;
 
         // RATIONALE: [SCHED-JOB-006] Record child PID and OS start-time immediately after spawn
         // Persists RunnerInfo so orphan recovery can distinguish surviving Codex child from total termination.
@@ -115,6 +132,7 @@ impl CodexAdapter {
                 let wait_res = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
                 match wait_res {
                     Ok(Ok(_)) => {
+                        let _ = crate::runner::clear_execution_guard(jid);
                         return Err(AdapterError::ProcessError(std::io::Error::new(
                             std::io::ErrorKind::Other,
                             format!("Failed to persist runner metadata for job {}: {}. Child terminated successfully.", jid, e),
@@ -134,6 +152,17 @@ impl CodexAdapter {
                             jid, e, marker_res.is_ok()
                         )));
                     }
+                }
+            } else {
+                // RunnerInfo persisted atomically: clear the write-ahead execution guard.
+                if let Err(ge) = crate::runner::clear_execution_guard(jid) {
+                    eprintln!("[Runner] Failed to clear write-ahead execution guard for job {}: {}", jid, ge);
+                    // RATIONALE: [SCHED-JOB-006] Guard clear failure fails closed
+                    // If clearing the guard fails, guard remains active to prevent second writer.
+                    return Err(AdapterError::UnconfirmedTermination(format!(
+                        "RunnerInfo was written but failed to clear write-ahead guard for job {}: {}. Guard remains active.",
+                        jid, ge
+                    )));
                 }
             }
         }

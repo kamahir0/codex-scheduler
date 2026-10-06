@@ -187,7 +187,10 @@ impl JobStore {
         // 1. Verify other jobs with the same session_id
         for other in jobs.iter() {
             if other.id != target_id && other.session_id == session_id {
-                if other.status == crate::models::JobStatus::Running || other.unconfirmed_execution {
+                if other.status == crate::models::JobStatus::Running
+                    || other.unconfirmed_execution
+                    || crate::runner::has_execution_guard(&other.id)
+                {
                     return Err(StoreError::SessionBusy(session_id.to_string()));
                 }
                 if crate::runner::get_job_liveness(&other.id) != crate::runner::LivenessState::Dead {
@@ -214,7 +217,7 @@ impl JobStore {
 
         // 2. Verify target job itself for stale / unknown child process or unconfirmed guard
         if let Some(target) = jobs.iter().find(|j| j.id == target_id) {
-            if target.unconfirmed_execution {
+            if target.unconfirmed_execution || crate::runner::has_execution_guard(target_id) {
                 return Err(StoreError::SessionBusy(session_id.to_string()));
             }
         }

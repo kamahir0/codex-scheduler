@@ -86,6 +86,12 @@ pub fn runner_lease_path(job_id: &str) -> Result<PathBuf, RunnerError> {
     Ok(dir.join(format!("{}.lease", job_id)))
 }
 
+/// Returns the write-ahead execution guard path for a given job: `~/.codex-scheduler/runners/<job_id>.guard`
+pub fn runner_guard_path(job_id: &str) -> Result<PathBuf, RunnerError> {
+    let dir = runner_lock_dir()?;
+    Ok(dir.join(format!("{}.guard", job_id)))
+}
+
 // RATIONALE: [SCHED-JOB-006] Atomic persistence of runner metadata via temp-file and rename
 // Prevents exposing corrupt or partially written JSON during process interruption or crash.
 pub fn write_runner_info(info: &RunnerInfo) -> Result<(), RunnerError> {
@@ -180,6 +186,9 @@ pub fn cleanup_runner_files(job_id: &str) {
     if let Ok(lease_path) = runner_lease_path(job_id) {
         let _ = fs::remove_file(lease_path);
     }
+    if let Ok(guard_path) = runner_guard_path(job_id) {
+        let _ = fs::remove_file(guard_path);
+    }
 }
 
 /// Removes all log files and directory for a deleted job: `~/.codex-scheduler/logs/<job_id>`
@@ -249,8 +258,104 @@ pub fn get_system_boot_time() -> Result<u64, ()> {
 
 #[cfg(windows)]
 pub fn get_system_boot_time() -> Result<u64, ()> {
-    // Windows boot time is deliberately not derived from wall-clock subtraction to avoid false reboots.
-    Err(())
+    #[repr(C)]
+    struct SystemTimeOfDayInformation {
+        boot_time: i64,
+        current_time: i64,
+        time_zone_bias: i64,
+        time_zone_id: u32,
+        reserved: u32,
+        boot_time_bias: u64,
+        sleep_time_bias: u64,
+    }
+
+    type NtQuerySystemInformationFn = unsafe extern "system" fn(
+        system_information_class: u32,
+        system_information: *mut std::ffi::c_void,
+        system_information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+
+    use windows::core::s;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+    unsafe {
+        let ntdll = GetModuleHandleA(s!("ntdll.dll")).map_err(|_| ())?;
+        let proc = GetProcAddress(ntdll, s!("NtQuerySystemInformation")).ok_or(())?;
+        let nt_query_system_information: NtQuerySystemInformationFn = std::mem::transmute(proc);
+
+        let mut info = std::mem::MaybeUninit::<SystemTimeOfDayInformation>::uninit();
+        let mut return_length = 0u32;
+        let status = nt_query_system_information(
+            3, // SystemTimeOfDayInformation
+            info.as_mut_ptr() as *mut std::ffi::c_void,
+            std::mem::size_of::<SystemTimeOfDayInformation>() as u32,
+            &mut return_length,
+        );
+
+        if status == 0 {
+            let info = info.assume_init();
+            if info.boot_time > 0 {
+                // KeBootTime is 100-nanosecond intervals since January 1, 1601 UTC.
+                let boot_time_100ns = info.boot_time as u64;
+                const UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;
+                if boot_time_100ns >= UNIX_EPOCH_100NS {
+                    let sec = (boot_time_100ns - UNIX_EPOCH_100NS) / 10_000_000;
+                    return Ok(sec);
+                } else {
+                    return Ok(boot_time_100ns);
+                }
+            }
+        }
+        Err(())
+    }
+}
+
+#[cfg(windows)]
+pub fn get_system_boot_id() -> Option<String> {
+    #[repr(C)]
+    struct SystemTimeOfDayInformation {
+        boot_time: i64,
+        current_time: i64,
+        time_zone_bias: i64,
+        time_zone_id: u32,
+        reserved: u32,
+        boot_time_bias: u64,
+        sleep_time_bias: u64,
+    }
+
+    type NtQuerySystemInformationFn = unsafe extern "system" fn(
+        system_information_class: u32,
+        system_information: *mut std::ffi::c_void,
+        system_information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+
+    use windows::core::s;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+    unsafe {
+        let ntdll = GetModuleHandleA(s!("ntdll.dll")).ok()?;
+        let proc = GetProcAddress(ntdll, s!("NtQuerySystemInformation"))?;
+        let nt_query_system_information: NtQuerySystemInformationFn = std::mem::transmute(proc);
+
+        let mut info = std::mem::MaybeUninit::<SystemTimeOfDayInformation>::uninit();
+        let mut return_length = 0u32;
+        let status = nt_query_system_information(
+            3, // SystemTimeOfDayInformation
+            info.as_mut_ptr() as *mut std::ffi::c_void,
+            std::mem::size_of::<SystemTimeOfDayInformation>() as u32,
+            &mut return_length,
+        );
+
+        if status == 0 {
+            let info = info.assume_init();
+            if info.boot_time > 0 {
+                return Some(format!("win-boot-{:x}", info.boot_time));
+            }
+        }
+        None
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -260,7 +365,7 @@ pub fn get_system_boot_id() -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(windows)))]
 pub fn get_system_boot_id() -> Option<String> {
     None
 }
@@ -325,26 +430,20 @@ impl HandoffLease {
 
 // RATIONALE: [SCHED-JOB-007] Stable machine reboot detection
 // Evaluates reboot evidence objectively:
-// 1. Windows: monotonic GetTickCount64 rollback (current_uptime < lease_uptime). Never uses wall-clock subtraction.
-// 2. Linux: kernel random boot_id UUID change, or /proc/stat btime mismatch.
-// 3. macOS: kern.boottime sec mismatch.
+// 1. Linux & Windows: kernel boot identifier (boot_id) mismatch.
+// 2. macOS, Linux & Windows: kernel boot timestamp (boot_time) mismatch.
+// Reboot is NEVER proved by GetTickCount64 / uptime rollback alone;
+// boot-level OS evidence is strictly required to prove reboot.
 // Returns false (fail-closed) if reboot cannot be proved objectively.
 pub fn is_reboot_detected(lease: &HandoffLease) -> bool {
-    // Check boot_id change (Linux)
+    // Check boot_id change (Linux & Windows)
     if let (Some(lease_bid), Some(cur_bid)) = (&lease.boot_id, &get_system_boot_id()) {
         if lease_bid != cur_bid {
             return true;
         }
     }
 
-    // Check monotonic uptime rollback (Windows & Linux)
-    if let (Some(lease_uptime), Ok(cur_uptime)) = (lease.uptime_ms, get_system_uptime_ms()) {
-        if cur_uptime < lease_uptime {
-            return true;
-        }
-    }
-
-    // Check kernel boot timestamp change (macOS & Linux)
+    // Check kernel boot timestamp change (macOS, Linux & Windows)
     if let (Some(lease_boot), Ok(cur_boot)) = (lease.boot_time, get_system_boot_time()) {
         if lease_boot != cur_boot {
             return true;
@@ -365,6 +464,85 @@ pub fn write_corrupt_runner_info_marker(job_id: &str, unconfirmed_pid: u32) -> R
     );
     fs::write(path, content)?;
     Ok(())
+}
+
+// Test injection hooks for deterministic failure simulation
+static INJECT_GUARD_WRITE_FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static INJECT_GUARD_CLEAR_FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_inject_guard_write_failure(fail: bool) {
+    INJECT_GUARD_WRITE_FAIL.store(fail, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn set_inject_guard_clear_failure(fail: bool) {
+    INJECT_GUARD_CLEAR_FAIL.store(fail, std::sync::atomic::Ordering::SeqCst);
+}
+
+// RATIONALE: [SCHED-JOB-006] Write-ahead durable execution guard before child process spawn
+// Persists durable evidence that a child process may exist BEFORE calling spawn().
+// Prevents the untracked child race where runner crashes between child spawn and RunnerInfo persistence.
+// Cleared only after RunnerInfo atomic persistence succeeds.
+pub fn write_execution_guard(job_id: &str) -> Result<(), RunnerError> {
+    if INJECT_GUARD_WRITE_FAIL.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(RunnerError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Injected guard write failure",
+        )));
+    }
+    let path = runner_guard_path(job_id)?;
+    let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+    let content = serde_json::json!({
+        "job_id": job_id,
+        "guard": "unconfirmed_execution",
+        "created_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let content_str = serde_json::to_string(&content)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fs::write(&tmp_path, content_str)?;
+    fs::rename(&tmp_path, &path)?;
+
+    // Also update HandoffLease unconfirmed_child if lease exists
+    if let Some(mut lease) = read_handoff_lease(job_id) {
+        lease.unconfirmed_child = true;
+        let _ = write_handoff_lease(&lease);
+    }
+    Ok(())
+}
+
+/// Clears the write-ahead execution guard after RunnerInfo has been atomically persisted.
+pub fn clear_execution_guard(job_id: &str) -> Result<(), RunnerError> {
+    if INJECT_GUARD_CLEAR_FAIL.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(RunnerError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Injected guard clear failure",
+        )));
+    }
+    let path = runner_guard_path(job_id)?;
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    if let Some(mut lease) = read_handoff_lease(job_id) {
+        if lease.unconfirmed_child {
+            lease.unconfirmed_child = false;
+            let _ = write_handoff_lease(&lease);
+        }
+    }
+    Ok(())
+}
+
+/// Checks whether an execution guard is actively in place.
+pub fn has_execution_guard(job_id: &str) -> bool {
+    if let Ok(path) = runner_guard_path(job_id) {
+        if path.exists() {
+            return true;
+        }
+    }
+    if let Some(lease) = read_handoff_lease(job_id) {
+        if lease.unconfirmed_child {
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -862,11 +1040,15 @@ pub fn get_job_liveness(job_id: &str) -> LivenessState {
             if is_reboot_detected(lease) {
                 return LivenessState::Dead;
             }
-            if lease.unconfirmed_child {
+            if lease.unconfirmed_child || has_execution_guard(job_id) {
                 return LivenessState::Unknown;
             }
         }
-        _ => {}
+        _ => {
+            if has_execution_guard(job_id) {
+                return LivenessState::Unknown;
+            }
+        }
     }
     match read_runner_info_checked(job_id) {
         RunnerInfoRead::Present(info) => check_codex_process_liveness(&info),

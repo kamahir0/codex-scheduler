@@ -318,7 +318,7 @@ impl SchedulerService {
                                 runner_confirmed_dead = true;
                             } else {
                                 // If machine reboot cannot be proven, unconfirmed guards must fail closed
-                                if job.unconfirmed_execution || lease.unconfirmed_child {
+                                if job.unconfirmed_execution || lease.unconfirmed_child || runner::has_execution_guard(&job.id) {
                                     continue;
                                 }
                                 match runner::check_lease_liveness(lease) {
@@ -338,7 +338,7 @@ impl SchedulerService {
                         }
                         runner::HandoffLeaseRead::Missing => {
                             // No lease found: cannot prove reboot, fail-closed if unconfirmed guard exists
-                            if job.unconfirmed_execution {
+                            if job.unconfirmed_execution || runner::has_execution_guard(&job.id) {
                                 continue;
                             }
                         }
@@ -384,6 +384,7 @@ impl SchedulerService {
                     if reboot_detected {
                         // Clear unconfirmed execution guard upon proven machine reboot
                         job.unconfirmed_execution = false;
+                        let _ = runner::clear_execution_guard(&job.id);
                     }
 
                     runner::cleanup_runner_files(&job.id);
@@ -536,7 +537,7 @@ impl SchedulerService {
             .ok_or_else(|| CoreError::JobNotFound(job_id.to_string()))?;
 
         // Fail-closed guard: unconfirmed execution prohibits handoff and execution
-        if job.unconfirmed_execution {
+        if job.unconfirmed_execution || runner::has_execution_guard(job_id) {
             return Err(CoreError::SessionBusy(format!(
                 "Job {} has unconfirmed execution guard, handoff prohibited",
                 job_id

@@ -1409,29 +1409,35 @@ async fn test_unconfirmed_child_termination_marker_fails_closed() {
 }
 
 // RATIONALE: [SCHED-JOB-007] Stable reboot detection across platforms
-// Verifies monotonic uptime rollback detects reboot, while monotonic advance does not false-reboot.
+// Verifies:
+// 1. Boot identity mismatch detects reboot even when post-reboot uptime exceeds pre-reboot uptime.
+// 2. Same boot does not trigger false reboot even when uptime advances.
+// 3. Uptime rollback alone (GetTickCount64 alone) without boot identity is unprovable and fails closed.
+// 4. Boot ID and boot time mismatch detects reboot.
 #[test]
 fn test_reboot_identity_stability_and_monotonicity() {
     let now = Utc::now();
 
-    // Case 1: Monotonic rollback (cur_uptime < lease_uptime) -> reboot detected!
-    let lease_rollback = runner::HandoffLease {
-        job_id: "job-reboot-1".to_string(),
+    // Case 1: Pre-reboot uptime < simulated post-reboot uptime, but boot identity change detects reboot!
+    // (Simulates system rebooted and running for large uptime while old lease was created at 10ms uptime)
+    let lease_post_reboot_longer = runner::HandoffLease {
+        job_id: "job-reboot-longer-1".to_string(),
         tick_pid: 100,
         tick_start_time: None,
         runner_pid: None,
         runner_start_time: None,
-        boot_id: None,
-        boot_time: None,
-        uptime_ms: Some(u64::MAX), // lease has very large uptime
-        claimed_at: now,
+        boot_id: Some("definitely-different-boot-id".to_string()),
+        boot_time: Some(1), // Mismatched boot timestamp
+        uptime_ms: Some(10), // Small pre-reboot uptime
+        claimed_at: now - chrono::Duration::hours(1),
         unconfirmed_child: false,
     };
-    if runner::get_system_uptime_ms().is_ok() {
-        assert!(runner::is_reboot_detected(&lease_rollback));
-    }
+    assert!(
+        runner::is_reboot_detected(&lease_post_reboot_longer),
+        "Boot identity change must detect reboot even when post-reboot uptime > pre-reboot uptime"
+    );
 
-    // Case 2: Monotonic advance (cur_uptime >= lease_uptime) -> NO false reboot!
+    // Case 2: Monotonic advance within same boot -> NO false reboot!
     let lease_advance = runner::HandoffLease {
         job_id: "job-advance-1".to_string(),
         tick_pid: 100,
@@ -1444,9 +1450,30 @@ fn test_reboot_identity_stability_and_monotonicity() {
         claimed_at: now,
         unconfirmed_child: false,
     };
-    assert!(!runner::is_reboot_detected(&lease_advance), "Monotonic advance must not trigger false reboot");
+    assert!(
+        !runner::is_reboot_detected(&lease_advance),
+        "Monotonic advance within same boot must NOT trigger false reboot"
+    );
 
-    // Case 3: Boot ID mismatch -> reboot detected
+    // Case 3: GetTickCount64 / uptime alone without boot identity cannot prove reboot -> fails closed (false)
+    let lease_uptime_only = runner::HandoffLease {
+        job_id: "job-uptime-only-1".to_string(),
+        tick_pid: 100,
+        tick_start_time: None,
+        runner_pid: None,
+        runner_start_time: None,
+        boot_id: None,
+        boot_time: None,
+        uptime_ms: Some(u64::MAX),
+        claimed_at: now,
+        unconfirmed_child: false,
+    };
+    assert!(
+        !runner::is_reboot_detected(&lease_uptime_only),
+        "GetTickCount64 alone must NOT prove reboot; fails closed"
+    );
+
+    // Case 4: Boot ID mismatch -> reboot detected
     let lease_diff_bid = runner::HandoffLease {
         job_id: "job-diff-bid-1".to_string(),
         tick_pid: 100,
@@ -1454,7 +1481,7 @@ fn test_reboot_identity_stability_and_monotonicity() {
         runner_pid: None,
         runner_start_time: None,
         boot_id: Some("definitely-different-uuid".to_string()),
-        boot_time: None,
+        boot_time: runner::get_system_boot_time().ok(),
         uptime_ms: None,
         claimed_at: now,
         unconfirmed_child: false,
@@ -2174,6 +2201,223 @@ async fn test_run_job_runner_handshake_start_identity_and_guard_rejections() {
     let job5_done = store.get_job(&job5.id).unwrap().unwrap();
     assert_ne!(job5_done.status, JobStatus::Scheduled);
     runner::cleanup_runner_files(&job5.id);
+}
+
+// RATIONALE: [SCHED-JOB-006] Write-ahead execution guard lifecycle and failure injection tests
+// Proves that:
+// 1. Guard write success -> child spawned -> runner crash before RunnerInfo:
+//    Durable guard remains on disk, blocking second writer on next tick / claim.
+// 2. Guard persistence failure:
+//    Codex child is NOT spawned, process error returned immediately.
+// 3. RunnerInfo success -> guard clear:
+//    Guard is cleared, normal execution completes, RunnerInfo is durable evidence.
+// 4. Guard clear failure:
+//    Fails closed, guard remains active, second writer is blocked.
+#[tokio::test]
+async fn test_write_ahead_execution_guard_lifecycle_and_failure_injections() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-write-ahead-guard-1";
+
+    // 1. Guard write success -> child spawn -> RunnerInfo write前 runner crash => next tickでもsecond writer不可
+    let mut job1 = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(5),
+        None,
+    )
+    .unwrap();
+    job1.set_status(JobStatus::Running);
+    store.insert_job(job1.clone()).unwrap();
+
+    // Establish write-ahead guard before spawn
+    runner::write_execution_guard(&job1.id).unwrap();
+    assert!(runner::has_execution_guard(&job1.id), "Guard must be active on disk");
+
+    // Simulate runner crash before RunnerInfo is written (RunnerInfo file is missing)
+    assert!(matches!(runner::read_runner_info_checked(&job1.id), runner::RunnerInfoRead::Missing));
+
+    // Next tick: reconcile must NOT recover the job (must fail-closed and retain Running)
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert!(recovered.is_empty(), "Reconcile must NOT recover job with active write-ahead execution guard");
+    assert_eq!(store.get_job(&job1.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // Also: claim_due_jobs for a new due job in the same session must be blocked
+    let job1_subsequent = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(1),
+        None,
+    )
+    .unwrap();
+    store.insert_job(job1_subsequent.clone()).unwrap();
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert!(claimed.is_empty(), "Second writer in same session must be blocked while write-ahead guard is active");
+
+    // Also: manual claim_job_for_execution must be rejected with SessionBusy
+    let manual_claim = store.claim_job_for_execution(&job1_subsequent.id);
+    assert!(matches!(manual_claim, Err(codex_scheduler_core::store::StoreError::SessionBusy(_))));
+
+    runner::cleanup_runner_files(&job1.id);
+    runner::cleanup_runner_files(&job1_subsequent.id);
+
+    // 2. Guard persistence failure => child is NOT spawned
+    runner::set_inject_guard_write_failure(true);
+    let adapter = CodexAdapter::new();
+    let spawn_res = adapter
+        .execute_resume_streaming_with_job(
+            "sess-guard-fail-2",
+            temp.path(),
+            "prompt",
+            None,
+            Some("job-guard-fail-2"),
+        )
+        .await;
+    assert!(spawn_res.is_err(), "Adapter must fail immediately if write-ahead guard persistence fails");
+    assert!(!runner::has_execution_guard("job-guard-fail-2"), "Guard must not exist when persistence failed");
+    runner::set_inject_guard_write_failure(false);
+
+    // 3. RunnerInfo success -> guard clear => normal execution
+    let job3_id = "job-guard-clear-ok-3";
+    runner::write_execution_guard(job3_id).unwrap();
+    assert!(runner::has_execution_guard(job3_id));
+
+    // Simulate RunnerInfo atomic persistence succeeding
+    let info3 = runner::RunnerInfo {
+        job_id: job3_id.to_string(),
+        session_id: "sess-3".to_string(),
+        runner_pid: std::process::id(),
+        runner_start_time: runner::get_process_start_time(std::process::id()).ok().flatten(),
+        runner_started_at: now,
+        codex_pid: Some(std::process::id()),
+        codex_start_time: runner::get_process_start_time(std::process::id()).ok().flatten(),
+    };
+    runner::write_runner_info(&info3).unwrap();
+    runner::clear_execution_guard(job3_id).unwrap();
+    assert!(!runner::has_execution_guard(job3_id), "Guard must be cleared after RunnerInfo succeeds");
+    runner::cleanup_runner_files(job3_id);
+
+    // 4. Guard clear failure => 安全側に残り、second writer不可
+    let job4_id = "job-guard-clear-fail-4";
+    runner::write_execution_guard(job4_id).unwrap();
+    assert!(runner::has_execution_guard(job4_id));
+
+    runner::set_inject_guard_clear_failure(true);
+    let clear_res = runner::clear_execution_guard(job4_id);
+    assert!(clear_res.is_err(), "Clear failure must be returned");
+    assert!(runner::has_execution_guard(job4_id), "Guard must remain active when clear fails");
+
+    // Verify second writer is blocked while guard remains active
+    let mut job4 = Job::new(
+        ProviderType::Codex,
+        "sess-guard-clear-fail-4".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(2),
+        None,
+    )
+    .unwrap();
+    job4.id = job4_id.to_string();
+    job4.set_status(JobStatus::Running);
+    store.insert_job(job4.clone()).unwrap();
+
+    let job4_other = Job::new(
+        ProviderType::Codex,
+        "sess-guard-clear-fail-4".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(1),
+        None,
+    )
+    .unwrap();
+    store.insert_job(job4_other.clone()).unwrap();
+
+    let claim4 = store.claim_due_jobs(now).unwrap();
+    assert!(claim4.is_empty(), "Second writer must be blocked when guard clear failed");
+
+    runner::set_inject_guard_clear_failure(false);
+    runner::cleanup_runner_files(job4_id);
+    runner::cleanup_runner_files(&job4_other.id);
+}
+
+// RATIONALE: [SCHED-JOB-007] Windows reboot recovery with unconfirmed_execution guard
+// Proves that when unconfirmed_execution guard is active, a proven Windows reboot
+// safely recovers the job to Failed/Retrying and clears the guard, allowing same-session claims.
+#[tokio::test]
+async fn test_unconfirmed_execution_windows_proven_reboot_recovery() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-win-reboot-recovery-1";
+
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    job.unconfirmed_execution = true; // unconfirmed guard!
+    store.insert_job(job.clone()).unwrap();
+
+    // Establish guard on disk
+    runner::write_execution_guard(&job.id).unwrap();
+
+    // Lease with simulated pre-reboot Windows identity (different boot_id / boot_time, small pre-reboot uptime)
+    let lease = runner::HandoffLease {
+        job_id: job.id.clone(),
+        tick_pid: 99999,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(99998),
+        runner_start_time: Some("fake_runner_start".to_string()),
+        boot_id: Some("ancient_windows_boot_id".to_string()),
+        boot_time: Some(1), // Mismatched boot timestamp
+        uptime_ms: Some(10), // Small pre-reboot uptime (< current system uptime)
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: true,
+    };
+    runner::write_handoff_lease(&lease).unwrap();
+
+    // Verify reboot is objectively detected
+    assert!(runner::is_reboot_detected(&lease));
+
+    // Reconcile: proven reboot MUST safely recover the job and clear the unconfirmed guard
+    let recovered = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered.len(), 1, "Proven Windows reboot must safely recover unconfirmed job");
+    assert_ne!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+    assert!(!store.get_job(&job.id).unwrap().unwrap().unconfirmed_execution, "Guard must be cleared");
+
+    // Subsequent job in the same session can now be claimed!
+    let next_job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(1),
+        None,
+    )
+    .unwrap();
+    store.insert_job(next_job.clone()).unwrap();
+
+    let claimed = store.claim_due_jobs(now).unwrap();
+    assert_eq!(claimed.len(), 1, "Subsequent job must be claimed successfully after reboot recovery");
+
+    runner::cleanup_runner_files(&job.id);
+    runner::cleanup_runner_files(&next_job.id);
 }
 
 

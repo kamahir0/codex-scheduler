@@ -1,15 +1,15 @@
 # Development State
 
 Stage: verification-ready
-Candidate: 0c69fc6f048439517299552e15eb531a67f8419a
+Candidate: 24903f1df73dc6dc2348fa95bce711f6b64e06bf
 Work base: 67710c63fd2257f3248aee2f7804a267aed5d0d1
 
 ## Active work
 
-- Current candidate: 0c69fc6f048439517299552e15eb531a67f8419a
-- Implemented Human-approved OS execution container architecture to objectively distinguish Case A vs Case B:
-  1. macOS/Unix: runner-owned Process Group container (`PGID == runner_pid`); Codex child inherits PGID; surviving PGID members inspection via `pgrep -g` with PID reuse validation
-  2. Windows: per-job named Job Object container (`Local\codex-scheduler-job-<job_id>`); `setup_runner_job_object` (`AssignProcessToJobObject`) before spawn; `find_surviving_job_object_pids` via `QueryInformationJobObject` (`JobObjectBasicProcessIdList`) for surviving processes; no `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
-  3. Reconcile & liveness: use active execution container evidence (`ContainerLiveness`) rather than timeouts to objectively distinguish Case A (safe recovery) from Case B (active child protection)
-  4. Verified across 10 failure matrix tests (test_failure_matrix_01 to 10), full workspace tests (126 passed), Windows cross-compilation, and xtask check-all
+- Current candidate: 24903f1df73dc6dc2348fa95bce711f6b64e06bf
+- Resolved Unix/macOS manual run-job execution container lookup gap:
+  1. `setup_runner_execution_container` (Unix): when initial lease has `runner_pid: None`, durably promotes current PID and start identity to `runner_pid` and `runner_start_time` before spawning Codex child (fails closed if persistence fails)
+  2. `check_execution_container_liveness` (Unix): if `runner_pid` is None, inspects `(tick_pid, tick_start_time)` if `tick_pid` has terminated (crashed), correctly identifying surviving background child processes in manual execution
+  3. `find_surviving_pgid_pids`: filters out runner PID itself (`pid != pgid`) to accurately query child processes in container
+  4. Verified across regression test `test_manual_scheduled_run_job_runner_crash_with_alive_child_in_pgid`, failure matrix 1-10 (all 10 passed), full workspace tests (127 passed), Windows cross-compilation, and xtask check-all
 - Next: Human Acceptance

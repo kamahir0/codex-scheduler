@@ -306,30 +306,21 @@ impl SchedulerService {
 
             for job in jobs.iter_mut() {
                 if job.status == JobStatus::Running && !runner::is_runner_active(&job.id) {
-                    // Fail-closed guard: if job has unconfirmed execution, NEVER recover.
-                    if job.unconfirmed_execution {
-                        continue;
-                    }
-
-                    // Check handoff grace period (15s): defer recovery while processes may be starting up
-                    let elapsed = now.signed_duration_since(job.updated_at);
-                    let in_grace_period = elapsed < chrono::Duration::seconds(15);
-
-                    // Check durable handoff lease
+                    // Check durable handoff lease first to determine machine reboot evidence
                     let lease_read = runner::read_handoff_lease_checked(&job.id);
                     let mut reboot_detected = false;
                     let mut runner_confirmed_dead = false;
 
                     match lease_read {
                         runner::HandoffLeaseRead::Present(ref lease) => {
-                            if lease.unconfirmed_child {
-                                // Fail-closed Unknown: do NOT recover
-                                continue;
-                            }
                             if runner::is_reboot_detected(lease) {
                                 reboot_detected = true;
                                 runner_confirmed_dead = true;
                             } else {
+                                // If machine reboot cannot be proven, unconfirmed guards must fail closed
+                                if job.unconfirmed_execution || lease.unconfirmed_child {
+                                    continue;
+                                }
                                 match runner::check_lease_liveness(lease) {
                                     runner::LeaseLiveness::Active | runner::LeaseLiveness::Unknown => {
                                         // Process actively running or state Unknown: do NOT recover
@@ -346,9 +337,17 @@ impl SchedulerService {
                             continue;
                         }
                         runner::HandoffLeaseRead::Missing => {
-                            // No lease found.
+                            // No lease found: cannot prove reboot, fail-closed if unconfirmed guard exists
+                            if job.unconfirmed_execution {
+                                continue;
+                            }
                         }
                     }
+
+                    // Check handoff grace period (15s): defer recovery while processes may be starting up
+                    // (bypassed if machine reboot was proven, as pre-reboot processes cannot survive OS restart)
+                    let elapsed = now.signed_duration_since(job.updated_at);
+                    let in_grace_period = elapsed < chrono::Duration::seconds(15);
 
                     // Inspect recorded Codex child process (bypassed if machine reboot was proven)
                     if !reboot_detected {
@@ -382,6 +381,11 @@ impl SchedulerService {
                     }
 
                     // Codex child process is definitively Dead and runner lock is released
+                    if reboot_detected {
+                        // Clear unconfirmed execution guard upon proven machine reboot
+                        job.unconfirmed_execution = false;
+                    }
+
                     runner::cleanup_runner_files(&job.id);
 
                     let attempt_number = (job.execution_history.len() + 1) as u32;
@@ -531,25 +535,91 @@ impl SchedulerService {
             .get_job(job_id)?
             .ok_or_else(|| CoreError::JobNotFound(job_id.to_string()))?;
 
+        // Fail-closed guard: unconfirmed execution prohibits handoff and execution
+        if job.unconfirmed_execution {
+            return Err(CoreError::SessionBusy(format!(
+                "Job {} has unconfirmed execution guard, handoff prohibited",
+                job_id
+            )));
+        }
+
         // If not already claimed to Running (e.g. manual invocation), claim it now
         if job.status == JobStatus::Running {
             // RATIONALE: [SCHED-JOB-007] Handoff handshake invariant before child spawn
             // Detached runner spawned by tick must NOT spawn Codex child until parent tick
-            // has persisted the updated HandoffLease with this runner's PID.
+            // has persisted the updated HandoffLease with this runner's PID and OS start identity.
             let my_pid = std::process::id();
+            let my_start_time = match runner::get_process_start_time(my_pid) {
+                Ok(Some(s)) => s,
+                _ => {
+                    return Err(CoreError::InvalidStateTransition(format!(
+                        "Handoff handshake failed: cannot determine current process OS start identity for PID {}",
+                        my_pid
+                    )));
+                }
+            };
+
             let mut handshake_confirmed = false;
             for _ in 0..60 {
-                if let runner::HandoffLeaseRead::Present(lease) = runner::read_handoff_lease_checked(job_id) {
-                    if lease.runner_pid == Some(my_pid) || lease.tick_pid == my_pid {
-                        handshake_confirmed = true;
-                        break;
+                match runner::read_handoff_lease_checked(job_id) {
+                    runner::HandoffLeaseRead::Present(lease) => {
+                        // lease liveness Unknown / unconfirmed_child prohibits handoff
+                        if lease.unconfirmed_child {
+                            return Err(CoreError::SessionBusy(format!(
+                                "Handoff rejected: lease has unconfirmed_child guard for job {}",
+                                job_id
+                            )));
+                        }
+                        match runner::check_lease_liveness(&lease) {
+                            runner::LeaseLiveness::Unknown => {
+                                return Err(CoreError::SessionBusy(format!(
+                                    "Handoff rejected: lease liveness is Unknown for job {}",
+                                    job_id
+                                )));
+                            }
+                            _ => {}
+                        }
+
+                        // runner_pid + runner_start_time match (detached runner handoff)
+                        let is_runner_match = lease.runner_pid == Some(my_pid)
+                            && lease.runner_start_time.as_deref() == Some(&my_start_time);
+                        // tick_pid + tick_start_time match (manual self-handoff / in-process execution)
+                        let is_tick_match = lease.tick_pid == my_pid
+                            && lease.tick_start_time.as_deref() == Some(&my_start_time);
+
+                        if is_runner_match || is_tick_match {
+                            handshake_confirmed = true;
+                            break;
+                        }
+
+                        // PID matches but OS start identity mismatches -> PID reuse, reject immediately
+                        if lease.runner_pid == Some(my_pid) && lease.runner_start_time.as_deref() != Some(&my_start_time) {
+                            return Err(CoreError::InvalidStateTransition(format!(
+                                "Handoff rejected: runner PID {} matches but OS start identity mismatches",
+                                my_pid
+                            )));
+                        }
+                        if lease.runner_pid.is_none() && lease.tick_pid == my_pid && lease.tick_start_time.as_deref() != Some(&my_start_time) {
+                            return Err(CoreError::InvalidStateTransition(format!(
+                                "Handoff rejected: tick PID {} matches but OS start identity mismatches",
+                                my_pid
+                            )));
+                        }
                     }
+                    runner::HandoffLeaseRead::Unreadable(e) => {
+                        return Err(CoreError::SessionBusy(format!(
+                            "Handoff rejected: corrupt lease for job {}: {}",
+                            job_id, e
+                        )));
+                    }
+                    runner::HandoffLeaseRead::Missing => {}
                 }
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
+
             if !handshake_confirmed {
                 return Err(CoreError::InvalidStateTransition(format!(
-                    "Handoff handshake timeout: updated lease with runner PID {} was not established by parent tick",
+                    "Handoff handshake timeout: updated lease with runner PID {} and start identity was not established by parent tick",
                     my_pid
                 )));
             }
@@ -564,6 +634,7 @@ impl SchedulerService {
     /// Atomically claims the job to prevent duplicate concurrent execution,
     /// acquires runner lock, and executes synchronously.
     pub async fn execute_job(&self, job_id: &str) -> Result<Job, CoreError> {
+        let _ = self.reconcile_running_jobs();
         let job = self.store.claim_job_for_execution(job_id)?;
         let _lock = runner::RunnerLock::acquire(job_id)?;
         self.execute_claimed_job(job).await

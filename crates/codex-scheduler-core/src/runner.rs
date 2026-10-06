@@ -382,21 +382,21 @@ pub enum LeaseLiveness {
 /// - Process does not exist or start identity mismatch (PID reuse) -> Dead
 /// - Process exists and start identity matches -> Active
 pub fn check_lease_liveness(lease: &HandoffLease) -> LeaseLiveness {
-    if lease.unconfirmed_child {
-        return LeaseLiveness::Unknown;
-    }
-
     if is_reboot_detected(lease) {
         return LeaseLiveness::Dead;
     }
 
+    if lease.unconfirmed_child {
+        return LeaseLiveness::Unknown;
+    }
+
     if let Some(r_pid) = lease.runner_pid {
-        let expected_start = match lease.runner_start_time.as_deref() {
-            Some(s) => s,
-            None => return LeaseLiveness::Unknown,
-        };
         match get_process_start_time(r_pid) {
             Ok(Some(actual_start)) => {
+                let expected_start = match lease.runner_start_time.as_deref() {
+                    Some(s) => s,
+                    None => return LeaseLiveness::Unknown,
+                };
                 if actual_start == expected_start {
                     LeaseLiveness::Active
                 } else {
@@ -407,12 +407,12 @@ pub fn check_lease_liveness(lease: &HandoffLease) -> LeaseLiveness {
             Err(()) => LeaseLiveness::Unknown,
         }
     } else {
-        let expected_tick_start = match lease.tick_start_time.as_deref() {
-            Some(s) => s,
-            None => return LeaseLiveness::Unknown,
-        };
         match get_process_start_time(lease.tick_pid) {
             Ok(Some(actual_start)) => {
+                let expected_tick_start = match lease.tick_start_time.as_deref() {
+                    Some(s) => s,
+                    None => return LeaseLiveness::Unknown,
+                };
                 if actual_start == expected_tick_start {
                     LeaseLiveness::Active
                 } else {
@@ -858,8 +858,13 @@ pub fn get_job_liveness(job_id: &str) -> LivenessState {
         return LivenessState::RunnerActive;
     }
     match read_handoff_lease_checked(job_id) {
-        HandoffLeaseRead::Present(ref lease) if lease.unconfirmed_child => {
-            return LivenessState::Unknown;
+        HandoffLeaseRead::Present(ref lease) => {
+            if is_reboot_detected(lease) {
+                return LivenessState::Dead;
+            }
+            if lease.unconfirmed_child {
+                return LivenessState::Unknown;
+            }
         }
         _ => {}
     }

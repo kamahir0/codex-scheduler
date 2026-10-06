@@ -1841,7 +1841,7 @@ fn test_lease_liveness_tri_state() {
         tick_pid: my_pid,
         tick_start_time: my_start.clone(),
         runner_pid: Some(my_pid),
-        runner_start_time: my_start,
+        runner_start_time: my_start.clone(),
         boot_id: None,
         boot_time: None,
         uptime_ms: None,
@@ -1849,6 +1849,331 @@ fn test_lease_liveness_tri_state() {
         unconfirmed_child: true,
     };
     assert_eq!(runner::check_lease_liveness(&unconfirmed_child_lease), runner::LeaseLiveness::Unknown);
+
+    // 5. Dead: unconfirmed_child with proven reboot
+    let unconfirmed_child_reboot_lease = runner::HandoffLease {
+        job_id: "job-lease-unconfirmed-reboot".to_string(),
+        tick_pid: my_pid,
+        tick_start_time: my_start.clone(),
+        runner_pid: Some(my_pid),
+        runner_start_time: my_start,
+        boot_id: Some("ancient_boot_id".to_string()),
+        boot_time: Some(1),
+        uptime_ms: Some(u64::MAX),
+        claimed_at: now,
+        unconfirmed_child: true,
+    };
+    assert_eq!(runner::check_lease_liveness(&unconfirmed_child_reboot_lease), runner::LeaseLiveness::Dead);
+}
+
+// RATIONALE: [SCHED-JOB-007] Safe recovery of unconfirmed execution after proven reboot
+// Proves that:
+// 1. unconfirmed_execution=true during same boot (or unproven reboot) maintains Running (fail-closed)
+// 2. unconfirmed_execution=true after proven machine reboot recovers safely to Failed/Retrying and clears unconfirmed guard
+// 3. lease.unconfirmed_child=true during same boot maintains Running (fail-closed)
+// 4. lease.unconfirmed_child=true after proven machine reboot recovers safely
+// 5. Same-session job can be scheduled and claimed after reboot recovery
+#[tokio::test]
+async fn test_unconfirmed_execution_and_child_reboot_recovery() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let session_id = "sess-unconfirmed-reboot-1";
+    let (cur_boot_id, cur_boot_time, cur_uptime_ms) = runner::current_boot_identity();
+
+    // --- Scenario A: unconfirmed_execution=true + same boot => Running maintained ---
+    let mut job_a = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job_a.set_status(JobStatus::Running);
+    job_a.unconfirmed_execution = true;
+    job_a.updated_at = now - chrono::Duration::minutes(10);
+    store.insert_job(job_a.clone()).unwrap();
+
+    // Lease matching current boot identity (same boot)
+    let lease_same_boot = runner::HandoffLease {
+        job_id: job_a.id.clone(),
+        tick_pid: 9999991,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(9999992),
+        runner_start_time: Some("fake_runner_start".to_string()),
+        boot_id: cur_boot_id.clone(),
+        boot_time: cur_boot_time,
+        uptime_ms: cur_uptime_ms.map(|u| u.saturating_sub(1000)),
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: false,
+    };
+    runner::write_handoff_lease(&lease_same_boot).unwrap();
+
+    // Reconcile: must NOT recover, must maintain Running
+    let recovered_same = service.reconcile_running_jobs().unwrap();
+    assert!(recovered_same.is_empty(), "unconfirmed_execution on same boot must NOT recover");
+    let job_a_check = store.get_job(&job_a.id).unwrap().unwrap();
+    assert_eq!(job_a_check.status, JobStatus::Running);
+    assert!(job_a_check.unconfirmed_execution);
+
+    // --- Scenario B: unconfirmed_execution=true + proven reboot => safe recovery & cleared guard ---
+    // Update lease with artificial past boot identity (reboot proven across macOS, Linux, and Windows)
+    let lease_reboot = runner::HandoffLease {
+        job_id: job_a.id.clone(),
+        tick_pid: 9999991,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(9999992),
+        runner_start_time: Some("fake_runner_start".to_string()),
+        boot_id: Some("ancient_boot_id_for_proven_reboot".to_string()),
+        boot_time: Some(1), // Mismatched boot timestamp indicates reboot on macOS / Linux
+        uptime_ms: Some(u64::MAX), // Monotonic uptime rollback on Windows / Linux
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: false,
+    };
+    runner::write_handoff_lease(&lease_reboot).unwrap();
+
+    // Reconcile: must detect reboot and safely recover job_a
+    let recovered_reboot = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered_reboot.len(), 1, "Proven reboot must safely recover orphan job");
+    assert_eq!(recovered_reboot[0].id, job_a.id);
+
+    let job_a_recovered = store.get_job(&job_a.id).unwrap().unwrap();
+    assert_ne!(job_a_recovered.status, JobStatus::Running, "Job must no longer be Running");
+    assert!(!job_a_recovered.unconfirmed_execution, "unconfirmed_execution guard must be cleared on proven reboot");
+
+    // --- Scenario C: After reboot recovery, same-session job can be scheduled and claimed cleanly ---
+    let job_subsequent = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now,
+        None,
+    )
+    .unwrap();
+    store.insert_job(job_subsequent.clone()).unwrap();
+    let claim_res = store.claim_job_for_execution(&job_subsequent.id);
+    assert!(claim_res.is_ok(), "Same-session job must be claimable after reboot recovery cleared the guard");
+    let _ = runner::cleanup_runner_files(&job_subsequent.id);
+
+    // --- Scenario D: lease.unconfirmed_child=true + same boot => Running maintained ---
+    let mut job_d = Job::new(
+        ProviderType::Codex,
+        "sess-unconfirmed-child-reboot".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job_d.set_status(JobStatus::Running);
+    store.insert_job(job_d.clone()).unwrap();
+
+    let lease_child_same_boot = runner::HandoffLease {
+        job_id: job_d.id.clone(),
+        tick_pid: 9999993,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(9999994),
+        runner_start_time: Some("fake_runner_start".to_string()),
+        boot_id: cur_boot_id.clone(),
+        boot_time: cur_boot_time,
+        uptime_ms: cur_uptime_ms.map(|u| u.saturating_sub(1000)),
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: true,
+    };
+    runner::write_handoff_lease(&lease_child_same_boot).unwrap();
+
+    let recovered_child_same = service.reconcile_running_jobs().unwrap();
+    assert!(recovered_child_same.is_empty(), "unconfirmed_child on same boot must NOT recover");
+    assert_eq!(store.get_job(&job_d.id).unwrap().unwrap().status, JobStatus::Running);
+
+    // --- Scenario E: lease.unconfirmed_child=true + proven reboot => safe recovery ---
+    let lease_child_reboot = runner::HandoffLease {
+        job_id: job_d.id.clone(),
+        tick_pid: 9999993,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(9999994),
+        runner_start_time: Some("fake_runner_start".to_string()),
+        boot_id: Some("ancient_boot_id_for_proven_reboot_2".to_string()),
+        boot_time: Some(1),
+        uptime_ms: Some(u64::MAX),
+        claimed_at: now - chrono::Duration::minutes(10),
+        unconfirmed_child: true,
+    };
+    runner::write_handoff_lease(&lease_child_reboot).unwrap();
+
+    let recovered_child_reboot = service.reconcile_running_jobs().unwrap();
+    assert_eq!(recovered_child_reboot.len(), 1, "Proven reboot must safely recover unconfirmed_child job");
+    assert_ne!(store.get_job(&job_d.id).unwrap().unwrap().status, JobStatus::Running);
+
+    runner::cleanup_runner_files(&job_a.id);
+    runner::cleanup_runner_files(&job_d.id);
+}
+
+// RATIONALE: [SCHED-JOB-007] Strict OS start identity verification and guard enforcement in run_job_runner
+// Proves that:
+// 1. Same PID + mismatched start identity rejects handoff (PID reuse safety)
+// 2. unconfirmed Running job rejects manual run-job
+// 3. lease.unconfirmed_child=true rejects handoff
+// 4. lease liveness Unknown rejects handoff
+// 5. legitimate detached runner handoff succeeds
+// 6. legitimate manual Scheduled run-job succeeds
+#[tokio::test]
+async fn test_run_job_runner_handshake_start_identity_and_guard_rejections() {
+    let temp = tempdir().unwrap();
+    let store_path = temp.path().join("jobs.json");
+    let store = JobStore::new_with_path(&store_path);
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
+
+    let now = Utc::now();
+    let my_pid = std::process::id();
+    let my_start = runner::get_process_start_time(my_pid).unwrap().unwrap();
+
+    // 1. same PID + mismatched start identity => handshake拒絶
+    let mut job1 = Job::new(
+        ProviderType::Codex,
+        "sess-handshake-mismatch-1".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(2),
+        None,
+    )
+    .unwrap();
+    job1.set_status(JobStatus::Running);
+    store.insert_job(job1.clone()).unwrap();
+
+    let lease_mismatched = runner::HandoffLease {
+        job_id: job1.id.clone(),
+        tick_pid: 99999,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(my_pid),
+        runner_start_time: Some("mismatched_ancient_start_time".to_string()), // Mismatch!
+        boot_id: None,
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: runner::get_system_uptime_ms().ok(),
+        claimed_at: now,
+        unconfirmed_child: false,
+    };
+    runner::write_handoff_lease(&lease_mismatched).unwrap();
+
+    let res_mismatch = service.run_job_runner(&job1.id).await;
+    assert!(
+        res_mismatch.is_err(),
+        "run_job_runner must reject handoff when PID matches but OS start identity mismatches"
+    );
+    runner::cleanup_runner_files(&job1.id);
+
+    // 2. unconfirmed Running jobへのmanual run-job =>拒絶
+    let mut job2 = Job::new(
+        ProviderType::Codex,
+        "sess-handshake-unconfirmed-job-2".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(2),
+        None,
+    )
+    .unwrap();
+    job2.set_status(JobStatus::Running);
+    job2.unconfirmed_execution = true; // unconfirmed guard!
+    store.insert_job(job2.clone()).unwrap();
+
+    let res_unconfirmed = service.run_job_runner(&job2.id).await;
+    assert!(
+        res_unconfirmed.is_err(),
+        "run_job_runner must reject job with unconfirmed_execution guard"
+    );
+    runner::cleanup_runner_files(&job2.id);
+
+    // 3. lease with unconfirmed_child=true =>拒絶
+    let mut job3 = Job::new(
+        ProviderType::Codex,
+        "sess-handshake-unconfirmed-lease-3".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(2),
+        None,
+    )
+    .unwrap();
+    job3.set_status(JobStatus::Running);
+    store.insert_job(job3.clone()).unwrap();
+
+    let lease_unconfirmed_child = runner::HandoffLease {
+        job_id: job3.id.clone(),
+        tick_pid: my_pid,
+        tick_start_time: Some(my_start.clone()),
+        runner_pid: Some(my_pid),
+        runner_start_time: Some(my_start.clone()),
+        boot_id: None,
+        boot_time: None,
+        uptime_ms: None,
+        claimed_at: now,
+        unconfirmed_child: true, // guard!
+    };
+    runner::write_handoff_lease(&lease_unconfirmed_child).unwrap();
+
+    let res_child_guard = service.run_job_runner(&job3.id).await;
+    assert!(
+        res_child_guard.is_err(),
+        "run_job_runner must reject handoff when lease has unconfirmed_child guard"
+    );
+    runner::cleanup_runner_files(&job3.id);
+
+    // 4. legitimate detached runner handoff =>成功
+    let mut job4 = Job::new(
+        ProviderType::Codex,
+        "sess-handshake-success-4".to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(2),
+        None,
+    )
+    .unwrap();
+    job4.set_status(JobStatus::Running);
+    store.insert_job(job4.clone()).unwrap();
+
+    let lease_legit = runner::HandoffLease {
+        job_id: job4.id.clone(),
+        tick_pid: 99998,
+        tick_start_time: Some("fake_tick_start".to_string()),
+        runner_pid: Some(my_pid),
+        runner_start_time: Some(my_start.clone()), // Matches my PID and start time!
+        boot_id: None,
+        boot_time: runner::get_system_boot_time().ok(),
+        uptime_ms: runner::get_system_uptime_ms().ok(),
+        claimed_at: now,
+        unconfirmed_child: false,
+    };
+    runner::write_handoff_lease(&lease_legit).unwrap();
+
+    let res_legit = service.run_job_runner(&job4.id).await;
+    assert!(res_legit.is_ok(), "Legitimate detached runner handoff must succeed");
+    let job4_done = store.get_job(&job4.id).unwrap().unwrap();
+    assert_ne!(job4_done.status, JobStatus::Running);
+    runner::cleanup_runner_files(&job4.id);
+
+    // 5. legitimate manual Scheduled run-job =>既存通り成功
+    let job5 = service
+        .schedule_job(
+            ProviderType::Codex,
+            "sess-handshake-scheduled-5".to_string(),
+            temp.path().to_path_buf(),
+            Some("continue".to_string()),
+            now + chrono::Duration::hours(1), // Scheduled
+            None,
+        )
+        .unwrap();
+    assert_eq!(job5.status, JobStatus::Scheduled);
+
+    let res_scheduled = service.run_job_runner(&job5.id).await;
+    assert!(res_scheduled.is_ok(), "Legitimate manual Scheduled run-job must succeed");
+    let job5_done = store.get_job(&job5.id).unwrap().unwrap();
+    assert_ne!(job5_done.status, JobStatus::Scheduled);
+    runner::cleanup_runner_files(&job5.id);
 }
 
 

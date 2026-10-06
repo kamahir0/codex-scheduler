@@ -1129,11 +1129,13 @@ pub fn find_surviving_pgid_pids(pgid: u32, expected_runner_start: Option<&str>) 
     let mut surviving = Vec::new();
     for line in text.lines() {
         if let Ok(pid) = line.trim().parse::<u32>() {
-            match get_process_start_time(pid) {
-                Ok(Some(_)) => {
-                    surviving.push(pid);
+            if pid != pgid {
+                match get_process_start_time(pid) {
+                    Ok(Some(_)) => {
+                        surviving.push(pid);
+                    }
+                    _ => {} // Dead or defunct
                 }
-                _ => {} // Dead or defunct
             }
         }
     }
@@ -1266,10 +1268,18 @@ pub fn find_surviving_job_object_pids(_job_object_name: &str) -> Result<Vec<u32>
 // On Unix: establishes runner-owned process group (PGID == runner_pid) so child inherits PGID.
 // On Windows: creates named Job Object and assigns runner process so child inherits Job Object.
 // Fails closed if container setup or assignment fails, preventing child spawn.
-pub fn setup_runner_execution_container(_job_id: &str) -> Result<(), RunnerError> {
+pub fn setup_runner_execution_container(job_id: &str) -> Result<(), RunnerError> {
     #[cfg(unix)]
     {
         ensure_runner_process_group()?;
+        if let Some(mut lease) = read_handoff_lease(job_id) {
+            if lease.runner_pid.is_none() {
+                let my_pid = std::process::id();
+                lease.runner_pid = Some(my_pid);
+                lease.runner_start_time = get_process_start_time(my_pid).ok().flatten();
+                write_handoff_lease(&lease)?;
+            }
+        }
         if INJECT_JOB_OBJECT_ASSIGN_FAIL.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(RunnerError::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -1281,8 +1291,8 @@ pub fn setup_runner_execution_container(_job_id: &str) -> Result<(), RunnerError
 
     #[cfg(windows)]
     {
-        let name = setup_runner_job_object(_job_id)?;
-        if let Some(mut lease) = read_handoff_lease(_job_id) {
+        let name = setup_runner_job_object(job_id)?;
+        if let Some(mut lease) = read_handoff_lease(job_id) {
             lease.job_object_name = Some(name);
             let _ = write_handoff_lease(&lease);
         }
@@ -1348,9 +1358,10 @@ pub fn check_execution_container_liveness(
         let (r_pid, r_start) = match lease {
             Some(l) => match l.runner_pid {
                 Some(pid) => (pid, l.runner_start_time.clone()),
-                None => {
-                    return ContainerLiveness::NoMembers;
-                }
+                None => match get_process_start_time(l.tick_pid) {
+                    Ok(None) => (l.tick_pid, l.tick_start_time.clone()),
+                    _ => return ContainerLiveness::NoMembers,
+                },
             },
             None => {
                 match read_runner_info_checked(job_id) {
@@ -1360,6 +1371,10 @@ pub fn check_execution_container_liveness(
                 }
             }
         };
+
+        if r_pid == 0 {
+            return ContainerLiveness::NoMembers;
+        }
 
         match find_surviving_pgid_pids(r_pid, r_start.as_deref()) {
             Ok(pids) => {

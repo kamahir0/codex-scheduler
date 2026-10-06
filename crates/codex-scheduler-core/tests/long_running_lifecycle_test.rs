@@ -2444,7 +2444,7 @@ async fn test_unconfirmed_execution_windows_proven_reboot_recovery() {
 }
 
 #[cfg(unix)]
-fn spawn_dead_runner_with_alive_child() -> (u32, u32) {
+fn spawn_dead_runner_with_alive_child() -> (u32, String, u32) {
     let out = std::process::Command::new("python3")
         .arg("-c")
         .arg(r#"
@@ -2452,15 +2452,18 @@ import os, subprocess
 os.setpgrp()
 runner_pid = os.getpid()
 child = subprocess.Popen(["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
-print(f"{runner_pid}:{child.pid}", flush=True)
+ps_out = subprocess.check_output(["ps", "-p", str(runner_pid), "-o", "stat=,lstart="]).decode().strip()
+lstart = " ".join(ps_out.split()[1:]) if len(ps_out.split()) >= 2 else ps_out
+print(f"{runner_pid}\t{lstart}\t{child.pid}", flush=True)
 "#)
         .output()
         .expect("spawn helper runner");
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let parts: Vec<&str> = text.split(':').collect();
+    let parts: Vec<&str> = text.split('\t').collect();
     let r_pid: u32 = parts[0].parse().unwrap();
-    let c_pid: u32 = parts[1].parse().unwrap();
-    (r_pid, c_pid)
+    let r_start = parts[1].to_string();
+    let c_pid: u32 = parts[2].parse().unwrap();
+    (r_pid, r_start, c_pid)
 }
 
 // Failure Matrix 1: evidence/container 確立前に runner crash -> recovery 可能
@@ -2599,7 +2602,7 @@ async fn test_failure_matrix_03_runner_crash_after_spawn_before_runner_info() {
     #[cfg(unix)]
     {
         // Spawn a helper runner that created its own process group, spawned child, then died
-        let (dead_runner_pid, live_child_pid) = spawn_dead_runner_with_alive_child();
+        let (dead_runner_pid, runner_start, live_child_pid) = spawn_dead_runner_with_alive_child();
 
         // Runner died before saving RunnerInfo (RunnerInfo is Missing)
         assert!(matches!(runner::read_runner_info_checked(&job.id), runner::RunnerInfoRead::Missing));
@@ -2610,7 +2613,7 @@ async fn test_failure_matrix_03_runner_crash_after_spawn_before_runner_info() {
             tick_pid: std::process::id(),
             tick_start_time: runner::get_process_start_time(std::process::id()).ok().flatten(),
             runner_pid: Some(dead_runner_pid),
-            runner_start_time: None, // Dead runner
+            runner_start_time: Some(runner_start),
             boot_id: runner::get_system_boot_id(),
             boot_time: runner::get_system_boot_time().ok(),
             uptime_ms: runner::get_system_uptime_ms().ok(),
@@ -2991,5 +2994,104 @@ async fn test_failure_matrix_10_windows_job_object_assign_failure_aborts_before_
     runner::cleanup_runner_files(job_id);
 }
 
+// Regression: manual Scheduled run-job (initial lease with runner_pid = None, tick_pid = runner_pid)
+// Runner establishes PGID, spawns child into PGID, and crashes before saving RunnerInfo.
+// Container liveness must inspect PGID == tick_pid, detect ActiveMembers, and block second writer.
+#[tokio::test]
+async fn test_manual_scheduled_run_job_runner_crash_with_alive_child_in_pgid() {
+    let temp = tempdir().unwrap();
+    let store = JobStore::new_with_path(temp.path().join("jobs.json"));
+    let service = SchedulerService::with_scheduler(store.clone(), None, Box::new(MockScheduler));
 
+    let now = Utc::now();
+    let session_id = "sess-manual-pgid-regression";
+    let mut job = Job::new(
+        ProviderType::Codex,
+        session_id.to_string(),
+        temp.path().to_path_buf(),
+        Some("continue".to_string()),
+        now - chrono::Duration::minutes(10),
+        None,
+    )
+    .unwrap();
+    job.set_status(JobStatus::Running);
+    store.insert_job(job.clone()).unwrap();
 
+    #[cfg(unix)]
+    {
+        // Helper runner establishes PGID == runner_pid, spawns child into PGID, then runner exits
+        let (dead_runner_pid, runner_start, live_child_pid) = spawn_dead_runner_with_alive_child();
+
+        // Initial lease for manual run-job (as created by claim_job_for_execution):
+        // tick_pid is current runner PID, tick_start_time is its OS start identity, runner_pid is None!
+        let lease = runner::HandoffLease {
+            job_id: job.id.clone(),
+            tick_pid: dead_runner_pid,
+            tick_start_time: Some(runner_start),
+            runner_pid: None,
+            runner_start_time: None,
+            boot_id: runner::get_system_boot_id(),
+            boot_time: runner::get_system_boot_time().ok(),
+            uptime_ms: runner::get_system_uptime_ms().ok(),
+            claimed_at: now - chrono::Duration::minutes(10),
+            unconfirmed_child: false,
+            job_object_name: None,
+        };
+        runner::write_handoff_lease(&lease).unwrap();
+        runner::write_execution_guard(&job.id).unwrap();
+
+        // Runner died before saving RunnerInfo (Missing)
+        assert!(matches!(runner::read_runner_info_checked(&job.id), runner::RunnerInfoRead::Missing));
+
+        // 1. check_execution_container_liveness == ActiveMembers
+        let liveness = runner::check_execution_container_liveness(&job.id, Some(&lease));
+        assert!(
+            matches!(liveness, runner::ContainerLiveness::ActiveMembers(count) if count >= 1),
+            "Container liveness must detect surviving child in PGID == tick_pid, got {:?}",
+            liveness
+        );
+
+        // 2. reconcile maintains Running
+        let recovered = service.reconcile_running_jobs().unwrap();
+        assert!(recovered.is_empty(), "Reconcile must maintain Running while child is alive in manual PGID");
+        assert_eq!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+        // 3. same-session second writer claim is rejected
+        let next_job = Job::new(
+            ProviderType::Codex,
+            session_id.to_string(),
+            temp.path().to_path_buf(),
+            Some("continue".to_string()),
+            now - chrono::Duration::minutes(1),
+            None,
+        )
+        .unwrap();
+        store.insert_job(next_job.clone()).unwrap();
+
+        let claimed = store.claim_due_jobs(now).unwrap();
+        assert!(claimed.is_empty(), "Second writer must be blocked while child is alive");
+
+        let manual_claim = store.claim_job_for_execution(&next_job.id);
+        assert!(matches!(manual_claim, Err(codex_scheduler_core::store::StoreError::SessionBusy(_))));
+
+        // 4. Terminate the live child
+        runner::kill_process(live_child_pid);
+        let _ = runner::safe_terminate_and_confirm(live_child_pid, None);
+
+        // Child is terminated: check_execution_container_liveness == NoMembers
+        let liveness_after = runner::check_execution_container_liveness(&job.id, Some(&lease));
+        assert_eq!(liveness_after, runner::ContainerLiveness::NoMembers);
+
+        // 5. Next reconcile performs safe recovery
+        let recovered_after = service.reconcile_running_jobs().unwrap();
+        assert_eq!(recovered_after.len(), 1, "Job must be recovered once container members exit");
+        assert_ne!(store.get_job(&job.id).unwrap().unwrap().status, JobStatus::Running);
+
+        // After recovery, next job in session can be claimed
+        let claimed_subsequent = store.claim_due_jobs(now).unwrap();
+        assert_eq!(claimed_subsequent.len(), 1, "Subsequent job can be claimed after orphan recovery");
+
+        runner::cleanup_runner_files(&job.id);
+        runner::cleanup_runner_files(&next_job.id);
+    }
+}

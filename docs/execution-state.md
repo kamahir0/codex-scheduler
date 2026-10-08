@@ -1,12 +1,12 @@
 # Development State
 
 Stage: verification-ready
-Candidate: ac9c2858ae31f8f9024f2161f3653ea954cfcb64
+Candidate: 519a171da18207a0378dab4b9aaa6d052c8892dd
 Work base: 67710c63fd2257f3248aee2f7804a267aed5d0d1
 
 ## Active work
 
-- Current candidate: ac9c2858ae31f8f9024f2161f3653ea954cfcb64
+- Current candidate: 519a171da18207a0378dab4b9aaa6d052c8892dd
 - Human Acceptance failure correction and verification completed:
   1. Spec-change `0022-os-scheduler-runtime-target-verification.md` applied to `docs/specs/os-scheduler.md` (OS-SCHED-006) and `docs/specs/cli.md` (CLI-CMD-003).
   2. Isolated unit tests from real launchd: `RealLaunchctlRunner` panics on tests; `with_dir` defaults to `MockLaunchctlRunner`. Real host launchd is never mutated by test suites.

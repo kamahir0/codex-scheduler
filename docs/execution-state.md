@@ -1,15 +1,20 @@
 # Development State
 
-Stage: verification-ready
+Stage: correction-ready
 Candidate: 24903f1df73dc6dc2348fa95bce711f6b64e06bf
 Work base: 67710c63fd2257f3248aee2f7804a267aed5d0d1
 
 ## Active work
 
 - Current candidate: 24903f1df73dc6dc2348fa95bce711f6b64e06bf
-- Resolved Unix/macOS manual run-job execution container lookup gap:
-  1. `setup_runner_execution_container` (Unix): when initial lease has `runner_pid: None`, durably promotes current PID and start identity to `runner_pid` and `runner_start_time` before spawning Codex child (fails closed if persistence fails)
-  2. `check_execution_container_liveness` (Unix): if `runner_pid` is None, inspects `(tick_pid, tick_start_time)` if `tick_pid` has terminated (crashed), correctly identifying surviving background child processes in manual execution
-  3. `find_surviving_pgid_pids`: filters out runner PID itself (`pid != pgid`) to accurately query child processes in container
-  4. Verified across regression test `test_manual_scheduled_run_job_runner_crash_with_alive_child_in_pgid`, failure matrix 1-10 (all 10 passed), full workspace tests (127 passed), Windows cross-compilation, and xtask check-all
-- Next: Human Acceptance
+- Human Acceptance failure correction:
+  - Blocker 1: macOS unit tests mutate real launchd (with_dir uses RealLaunchctlRunner; stale test plist remained in launchd)
+  - Blocker 2: scheduler readiness false positive (is_scheduler_ready only checks exit status of launchctl list, not matching runtime-loaded target with disk plist target)
+- Required actions:
+  1. Spec-change for OS-SCHED-006 runtime target verification
+  2. Isolate macOS unit tests with MockLaunchctlRunner (no side effects on real launchd)
+  3. Implement runtime target extraction and matching in is_scheduler_ready
+  4. Ensure safe repair of same-label stale runtime registration on ensure/repair
+  5. Run all required tests and xtasks
+  6. Repair real host launchd and verify with status --json
+  7. Schedule and verify new Human Acceptance job

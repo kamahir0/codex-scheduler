@@ -2,6 +2,7 @@ use super::{SchedulerBackend, SchedulerError, SchedulerOwner};
 use crate::models::Job;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(not(test))]
 use std::process::Command;
 
 pub const SCHEDULER_LABEL: &str = "dev.codexscheduler.scheduler";
@@ -17,7 +18,143 @@ pub struct RealLaunchctlRunner;
 
 impl LaunchctlRunner for RealLaunchctlRunner {
     fn run_launchctl(&self, args: &[&str]) -> std::io::Result<std::process::Output> {
-        Command::new("launchctl").args(args).output()
+        #[cfg(test)]
+        {
+            panic!(
+                "RealLaunchctlRunner invoked during unit/integration tests! Real host launchd mutation is strictly forbidden. Args: {:?}",
+                args
+            );
+        }
+        #[cfg(not(test))]
+        {
+            Command::new("launchctl").args(args).output()
+        }
+    }
+}
+
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(test)]
+#[derive(Clone)]
+pub struct MockLaunchctlRunner {
+    pub loaded: Arc<AtomicBool>,
+    pub load_should_fail: Arc<AtomicBool>,
+    pub loaded_executable: Arc<Mutex<Option<PathBuf>>>,
+    pub calls: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+#[cfg(test)]
+impl MockLaunchctlRunner {
+    pub fn new(loaded: bool) -> Self {
+        Self {
+            loaded: Arc::new(AtomicBool::new(loaded)),
+            load_should_fail: Arc::new(AtomicBool::new(false)),
+            loaded_executable: Arc::new(Mutex::new(None)),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn with_executable(exe: PathBuf) -> Self {
+        Self {
+            loaded: Arc::new(AtomicBool::new(true)),
+            load_should_fail: Arc::new(AtomicBool::new(false)),
+            loaded_executable: Arc::new(Mutex::new(Some(exe))),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn with_load_failure() -> Self {
+        Self {
+            loaded: Arc::new(AtomicBool::new(false)),
+            load_should_fail: Arc::new(AtomicBool::new(true)),
+            loaded_executable: Arc::new(Mutex::new(None)),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[cfg(test)]
+impl LaunchctlRunner for MockLaunchctlRunner {
+    fn run_launchctl(&self, args: &[&str]) -> std::io::Result<std::process::Output> {
+        use std::os::unix::process::ExitStatusExt;
+        let str_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        self.calls.lock().unwrap().push(str_args);
+
+        if args.first() == Some(&"list") {
+            if self.loaded.load(Ordering::SeqCst) {
+                let exe_opt = self.loaded_executable.lock().unwrap().clone();
+                let stdout_str = if let Some(exe) = exe_opt {
+                    format!(
+                        "{{\n\t\"Label\" = \"{}\";\n\t\"Program\" = \"{}\";\n\t\"ProgramArguments\" = (\n\t\t\"{}\";\n\t\t\"--scheduler-tick\";\n\t);\n}};\n",
+                        SCHEDULER_LABEL,
+                        exe.display(),
+                        exe.display()
+                    )
+                } else {
+                    format!("{{\n\t\"Label\" = \"{}\";\n}};\n", SCHEDULER_LABEL)
+                };
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(0),
+                    stdout: stdout_str.into_bytes(),
+                    stderr: Vec::new(),
+                })
+            } else {
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(1 << 8),
+                    stdout: Vec::new(),
+                    stderr: b"Could not find specified service".to_vec(),
+                })
+            }
+        } else if args.first() == Some(&"unload") || args.first() == Some(&"remove") {
+            self.loaded.store(false, Ordering::SeqCst);
+            *self.loaded_executable.lock().unwrap() = None;
+            Ok(std::process::Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        } else if args.first() == Some(&"load") {
+            if self.load_should_fail.load(Ordering::SeqCst) {
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(5 << 8),
+                    stdout: Vec::new(),
+                    stderr: b"Service could not be registered: Input/output error".to_vec(),
+                })
+            } else {
+                self.loaded.store(true, Ordering::SeqCst);
+                let mut found_exe = None;
+                for arg in args.iter().skip(1) {
+                    let path = Path::new(arg);
+                    if path.exists() {
+                        if let Ok(content) = fs::read_to_string(path) {
+                            if let Some(exe) = MacOsLaunchdScheduler::extract_executable_path_from_plist(&content) {
+                                found_exe = Some(exe);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some(exe) = found_exe {
+                    *self.loaded_executable.lock().unwrap() = Some(exe);
+                }
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(0),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+            }
+        } else {
+            Ok(std::process::Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
     }
 }
 
@@ -37,6 +174,15 @@ impl MacOsLaunchdScheduler {
         }
     }
 
+    #[cfg(test)]
+    pub fn with_dir(dir: PathBuf) -> Self {
+        Self {
+            launch_agents_dir: dir,
+            runner: Box::new(MockLaunchctlRunner::new(true)),
+        }
+    }
+
+    #[cfg(not(test))]
     pub fn with_dir(dir: PathBuf) -> Self {
         Self {
             launch_agents_dir: dir,
@@ -207,6 +353,48 @@ impl MacOsLaunchdScheduler {
         }
     }
 
+    /// Extracts the target executable path from `launchctl list <label>` (or `launchctl print`) stdout.
+    pub fn parse_runtime_executable_from_launchctl_list(stdout: &str) -> Option<PathBuf> {
+        // 1. "Program" = "...";
+        if let Some(pos) = stdout.find("\"Program\"") {
+            let after = &stdout[pos + "\"Program\"".len()..];
+            if let Some(eq_pos) = after.find('=') {
+                let val_part = &after[eq_pos + 1..];
+                if let Some(semi_pos) = val_part.find(';') {
+                    let raw = val_part[..semi_pos].trim().trim_matches('"');
+                    if !raw.is_empty() {
+                        return Some(PathBuf::from(raw));
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback: "ProgramArguments" = ( "..."; ... );
+        if let Some(pos) = stdout.find("\"ProgramArguments\"") {
+            let after = &stdout[pos + "\"ProgramArguments\"".len()..];
+            if let Some(paren_pos) = after.find('(') {
+                let inside = &after[paren_pos + 1..];
+                if let Some(semi_pos) = inside.find(';') {
+                    let raw = inside[..semi_pos].trim().trim_matches('"');
+                    if !raw.is_empty() {
+                        return Some(PathBuf::from(raw));
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback: launchctl print format: program = ...
+        if let Some(pos) = stdout.find("program = ") {
+            let after = &stdout[pos + "program = ".len()..];
+            let line = after.lines().next().unwrap_or("").trim().trim_matches('"');
+            if !line.is_empty() {
+                return Some(PathBuf::from(line));
+            }
+        }
+
+        None
+    }
+
     /// 過去バージョンで作成されたジョブ個別plist（com.codexscheduler.job.*.plist）を検出してアンロード・削除
     pub fn cleanup_legacy_job_plists(&self) -> Result<(), SchedulerError> {
         if !self.launch_agents_dir.exists() {
@@ -279,12 +467,13 @@ impl MacOsLaunchdScheduler {
     }
 
     // WHY: In macOS single scheduler architecture, Desktop-owned LaunchAgent must be prioritized.
-    //      If the Desktop LaunchAgent plist exists on disk but is unloaded (e.g. after reboot or manual unload),
-    //      CLI must safely repair it by directly re-loading via launchctl load -w without mutating plist content or binary path.
-    // WHAT BREAKS: Silently ignoring unloaded state leaves scheduled jobs unexecuted in background.
+    //      If the Desktop LaunchAgent plist exists on disk but is unloaded or runtime target mismatched,
+    //      CLI must safely repair it by unloading any stale same-label runtime registration and
+    //      re-loading the canonical Desktop plist via launchctl load -w without mutating plist content or binary path.
+    // WHAT BREAKS: Silently ignoring unloaded/mismatched state leaves scheduled jobs unexecuted in background.
     //              Overwriting Desktop plist with CLI binary breaks Desktop background Gatekeeper authorization.
-    //              Unconditionally ignoring unexpected unload failures masks broken launchd states.
-    // EVIDENCE: docs/spec-changes/0015-macos-scheduler-health-and-cli-status.md, OS-SCHED-006, CLI-CMD-004
+    //              Leaving stale runtime target active in launchd causes launchd to invoke wrong/missing binary.
+    // EVIDENCE: docs/spec-changes/0015-macos-scheduler-health-and-cli-status.md, docs/spec-changes/0022-os-scheduler-runtime-target-verification.md, OS-SCHED-006, CLI-CMD-004
     pub fn repair_desktop_scheduler(&self) -> Result<(), SchedulerError> {
         let plist_path = self.scheduler_plist_path();
         if !plist_path.exists() {
@@ -301,7 +490,11 @@ impl MacOsLaunchdScheduler {
             )));
         }
 
-        // Directly load existing plist with -w without pre-unloading
+        // Safely remove any existing/stale runtime registration for the same label
+        let _ = self.safe_launchctl_unload(&plist_path);
+        let _ = self.runner.run_launchctl(&["remove", SCHEDULER_LABEL]);
+
+        // Load existing Desktop plist with -w without mutating plist content or binary path
         let path_str = plist_path.to_string_lossy();
         let output = self.runner.run_launchctl(&["load", "-w", &path_str])?;
         if !output.status.success() {
@@ -509,8 +702,9 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
 
         // 既存の登録があれば確実にアンロード
         if plist_path.exists() {
-            self.safe_launchctl_unload(&plist_path)?;
+            let _ = self.safe_launchctl_unload(&plist_path);
         }
+        let _ = self.runner.run_launchctl(&["remove", SCHEDULER_LABEL]);
 
         // 新規作成または内容更新時のみ書き込み＆ロード
         fs::write(&plist_path, &expected_content)?;
@@ -534,11 +728,23 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
         self.scheduler_plist_path().exists()
     }
 
+    // WHY: Scheduler readiness must verify that launchctl has loaded the job AND that the
+    //      currently loaded executable in launchd runtime matches the expected target from
+    //      canonical plist.
+    // WHAT BREAKS: Merely checking exit code of `launchctl list <label>` causes false-positive
+    //              readiness when launchd holds a stale registration with the same label pointing
+    //              to a deleted/wrong executable (e.g. from previous tests or stale paths).
+    // EVIDENCE: docs/spec-changes/0022-os-scheduler-runtime-target-verification.md, OS-SCHED-006, CLI-CMD-003
     fn is_scheduler_ready(&self) -> bool {
         let owner = self.get_scheduler_owner();
         if owner != SchedulerOwner::Desktop && owner != SchedulerOwner::Cli {
             return false;
         }
+
+        let expected_exe = match self.get_scheduler_executable_path() {
+            Some(p) => p,
+            None => return false,
+        };
 
         // launchctl list dev.codexscheduler.scheduler が成功（loaded）していること
         let output = match self.runner.run_launchctl(&["list", SCHEDULER_LABEL]) {
@@ -546,7 +752,17 @@ impl SchedulerBackend for MacOsLaunchdScheduler {
             Err(_) => return false,
         };
 
-        output.status.success()
+        if !output.status.success() {
+            return false;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let runtime_exe = match Self::parse_runtime_executable_from_launchctl_list(&stdout) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        runtime_exe == expected_exe
     }
 
     fn is_scheduler_path_matched(&self, app_executable_path: &Path) -> bool {
@@ -1191,86 +1407,7 @@ mod tests {
         }
     }
 
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
-    #[derive(Clone)]
-    struct MockLaunchctlRunner {
-        loaded: Arc<AtomicBool>,
-        load_should_fail: Arc<AtomicBool>,
-        calls: Arc<Mutex<Vec<Vec<String>>>>,
-    }
-
-    impl MockLaunchctlRunner {
-        fn new(loaded: bool) -> Self {
-            Self {
-                loaded: Arc::new(AtomicBool::new(loaded)),
-                load_should_fail: Arc::new(AtomicBool::new(false)),
-                calls: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-
-        fn with_load_failure() -> Self {
-            Self {
-                loaded: Arc::new(AtomicBool::new(false)),
-                load_should_fail: Arc::new(AtomicBool::new(true)),
-                calls: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-    }
-
-    impl LaunchctlRunner for MockLaunchctlRunner {
-        fn run_launchctl(&self, args: &[&str]) -> std::io::Result<std::process::Output> {
-            use std::os::unix::process::ExitStatusExt;
-            let str_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-            self.calls.lock().unwrap().push(str_args);
-
-            if args.first() == Some(&"list") {
-                if self.loaded.load(Ordering::SeqCst) {
-                    Ok(std::process::Output {
-                        status: std::process::ExitStatus::from_raw(0),
-                        stdout: b"PID Status Label".to_vec(),
-                        stderr: Vec::new(),
-                    })
-                } else {
-                    Ok(std::process::Output {
-                        status: std::process::ExitStatus::from_raw(1 << 8),
-                        stdout: Vec::new(),
-                        stderr: b"Could not find specified service".to_vec(),
-                    })
-                }
-            } else if args.first() == Some(&"unload") {
-                self.loaded.store(false, Ordering::SeqCst);
-                Ok(std::process::Output {
-                    status: std::process::ExitStatus::from_raw(0),
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                })
-            } else if args.first() == Some(&"load") {
-                if self.load_should_fail.load(Ordering::SeqCst) {
-                    Ok(std::process::Output {
-                        status: std::process::ExitStatus::from_raw(5 << 8),
-                        stdout: Vec::new(),
-                        stderr: b"Service could not be registered: Input/output error".to_vec(),
-                    })
-                } else {
-                    self.loaded.store(true, Ordering::SeqCst);
-                    Ok(std::process::Output {
-                        status: std::process::ExitStatus::from_raw(0),
-                        stdout: Vec::new(),
-                        stderr: Vec::new(),
-                    })
-                }
-            } else {
-                Ok(std::process::Output {
-                    status: std::process::ExitStatus::from_raw(0),
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                })
-            }
-        }
-    }
 
     #[test]
     fn test_desktop_owner_loaded_cli_ensure_no_mutation_and_ready() {
@@ -1286,7 +1423,7 @@ mod tests {
         let cli_exe = temp_dir.join("codex-scheduler");
         fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
 
-        let runner = MockLaunchctlRunner::new(true);
+        let runner = MockLaunchctlRunner::with_executable(desk_exe.clone());
         let scheduler =
             MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner.clone()));
 
@@ -1436,7 +1573,7 @@ mod tests {
         let cli_exe = temp_dir.join("codex-scheduler");
         fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
 
-        let runner = MockLaunchctlRunner::new(true);
+        let runner = MockLaunchctlRunner::with_executable(desk_exe.clone());
         let scheduler =
             MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
 
@@ -1630,6 +1767,200 @@ mod tests {
             0,
             "JobStore must remain completely empty on scheduler error"
         );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_unit_test_suite_does_not_mutate_real_launchd() {
+        // RealLaunchctlRunner is guarded to panic when invoked during tests.
+        let runner = RealLaunchctlRunner;
+        let panic_result = std::panic::catch_unwind(|| {
+            let _ = runner.run_launchctl(&["list", "dummy"]);
+        });
+        assert!(
+            panic_result.is_err(),
+            "RealLaunchctlRunner must panic in test environment to prevent real launchd mutation"
+        );
+    }
+
+    #[test]
+    fn test_readiness_disk_target_equals_runtime_target_ready_true() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-ready-match-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        // Runtime holds exactly desk_exe
+        let runner = MockLaunchctlRunner::with_executable(desk_exe.clone());
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+
+        let plist_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
+        fs::write(scheduler.scheduler_plist_path(), &plist_content).unwrap();
+
+        // Disk target == Runtime target -> ready=true
+        assert!(scheduler.is_scheduler_ready());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_readiness_disk_target_not_equal_runtime_target_ready_false() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-ready-mismatch-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let other_exe = PathBuf::from("/Applications/Other.app/Contents/MacOS/other-gui");
+
+        // Runtime holds other_exe
+        let runner = MockLaunchctlRunner::with_executable(other_exe);
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+
+        let plist_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
+        fs::write(scheduler.scheduler_plist_path(), &plist_content).unwrap();
+
+        // Disk target != Runtime target -> ready=false
+        assert!(!scheduler.is_scheduler_ready());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_readiness_disk_target_exists_but_runtime_stale_temp_target_ready_false() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-ready-stale-temp-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        // Runtime holds a deleted stale temporary target from previous unit test
+        let stale_temp_exe = PathBuf::from(
+            "/private/var/folders/zf/stale-temp-test/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui",
+        );
+
+        let runner = MockLaunchctlRunner::with_executable(stale_temp_exe);
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+
+        let plist_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
+        fs::write(scheduler.scheduler_plist_path(), &plist_content).unwrap();
+
+        // Disk target exists and is valid, but runtime target is stale temp -> ready=false!
+        assert!(!scheduler.is_scheduler_ready());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_desktop_owner_stale_runtime_ensure_repairs_to_canonical_desktop_target() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-desk-repair-stale-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        // Stale runtime target
+        let stale_exe = PathBuf::from("/tmp/old-stale/codex-scheduler-gui");
+        let runner = MockLaunchctlRunner::with_executable(stale_exe);
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+
+        let plist_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
+        fs::write(scheduler.scheduler_plist_path(), &plist_content).unwrap();
+
+        // Initially not ready due to mismatch
+        assert!(!scheduler.is_scheduler_ready());
+
+        // Desktop calls ensure -> must repair to canonical Desktop target
+        let res = scheduler.ensure_scheduler_installed(&desk_exe);
+        assert!(res.is_ok());
+
+        // Now runtime target matches desk_exe -> ready=true
+        assert!(scheduler.is_scheduler_ready());
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_cli_repair_desktop_owner_does_not_overwrite_desktop_target() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-cli-repair-desk-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        let cli_exe = temp_dir.join("codex-scheduler");
+        fs::write(&cli_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        // Stale runtime target
+        let stale_exe = PathBuf::from("/tmp/stale/codex-scheduler-gui");
+        let runner = MockLaunchctlRunner::with_executable(stale_exe);
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+
+        let plist_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
+        fs::write(scheduler.scheduler_plist_path(), &plist_content).unwrap();
+
+        assert!(!scheduler.is_scheduler_ready());
+
+        // CLI calls ensure -> repairs Desktop scheduler without overwriting Desktop plist target!
+        let res = scheduler.ensure_scheduler_installed(&cli_exe);
+        assert!(res.is_ok());
+
+        // Plist content MUST still point to desk_exe (NOT cli_exe)
+        assert_eq!(scheduler.get_scheduler_owner(), SchedulerOwner::Desktop);
+        let content_after = fs::read_to_string(scheduler.scheduler_plist_path()).unwrap();
+        assert!(content_after.contains(&desk_exe.to_string_lossy().to_string()));
+        assert!(!content_after.contains(&cli_exe.to_string_lossy().to_string()));
+
+        // Runtime repaired to desk_exe -> ready=true
+        assert!(scheduler.is_scheduler_ready());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_runtime_identity_inspection_failure_ready_false() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("test-ready-inspect-fail-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let desk_dir = temp_dir.join("Codex Scheduler.app/Contents/MacOS");
+        fs::create_dir_all(&desk_dir).unwrap();
+        let desk_exe = desk_dir.join("codex-scheduler-gui");
+        fs::write(&desk_exe, b"#!/bin/sh\nexit 0").unwrap();
+
+        // loaded=true but loaded_executable is None (unreadable identity / generic output without Program)
+        let runner = MockLaunchctlRunner::new(true);
+        let scheduler =
+            MacOsLaunchdScheduler::with_dir_and_runner(temp_dir.clone(), Box::new(runner));
+
+        let plist_content = MacOsLaunchdScheduler::generate_scheduler_plist_content(&desk_exe);
+        fs::write(scheduler.scheduler_plist_path(), &plist_content).unwrap();
+
+        // Fail-closed: unreadable runtime identity -> ready=false
+        assert!(!scheduler.is_scheduler_ready());
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

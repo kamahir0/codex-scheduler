@@ -63,7 +63,7 @@ CLI は最低限以下のサブコマンドを提供しなければならない�
      - `store_path`: `jobs.json` の絶対パス
      - `scheduler`:
        - `installed`: bool（登録ファイルの有無。未実装プラットフォームでは false）
-       - `ready`: bool（正常稼働準備状態。未実装プラットフォームでは false）
+       - `ready`: bool（正常稼働準備状態。OS スケジューラが正常にロードされ、かつ runtime にロードされている実行ファイルがディスク上の canonical 設定と一致している場合のみ true、不一致・未ロード・エラー時は false。未実装プラットフォームでは false）
        - `owner`: `"desktop" | "cli" | "none" | "legacy" | "invalid"`（未実装プラットフォームでは `"none"`）
        - `executable`: 登録実行ファイルパス（Option、未実装プラットフォームでは null）
        - `path_matched`: bool（呼び出し元プロセス実行ファイルと登録実行ファイルの一致判定。未実装プラットフォームでは false）

@@ -83,6 +83,11 @@ html, body, #root {
   min-height: 0;
 }
 
+.job-table-wrapper .ant-table-body {
+  overflow-y: auto !important;
+}
+
+
 .job-table-wrapper .ant-table-placeholder {
   flex: 1;
   display: flex;

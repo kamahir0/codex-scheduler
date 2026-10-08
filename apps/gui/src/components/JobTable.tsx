@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { Table, Tag, Badge, Space, Button, Popconfirm, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
@@ -33,6 +33,8 @@ export const JobTable: React.FC<JobTableProps> = ({
   onCancelJob,
   onDeleteJob,
 }) => {
+  const [pageSize, setPageSize] = useState<number>(10);
+
   const getStatusBadge = (status: JobStatus) => {
     switch (status) {
       case "scheduled":
@@ -275,10 +277,17 @@ export const JobTable: React.FC<JobTableProps> = ({
       dataSource={jobs}
       rowKey="id"
       loading={loading}
-      pagination={{ pageSize: 8, showSizeChanger: false }}
+      pagination={{
+        pageSize,
+        showSizeChanger: true,
+        pageSizeOptions: ["10", "20", "50", "100"],
+        onShowSizeChange: (_current, size) => setPageSize(size),
+        showTotal: (total, range) => `${range[0]}-${range[1]} / 全 ${total} 件`,
+      }}
       className="job-table-wrapper"
       style={{ borderRadius: 8 }}
-      scroll={{ x: 1285 }}
+      scroll={{ x: 1285, y: "calc(100vh - 350px)" }}
     />
   );
 };
+

@@ -79,9 +79,26 @@ impl MockLaunchctlRunner {
 }
 
 #[cfg(test)]
+fn create_exit_status(code: i32) -> std::process::ExitStatus {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code as u32)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        compile_error!("Unsupported platform for exit status generation");
+    }
+}
+
+#[cfg(test)]
 impl LaunchctlRunner for MockLaunchctlRunner {
     fn run_launchctl(&self, args: &[&str]) -> std::io::Result<std::process::Output> {
-        use std::os::unix::process::ExitStatusExt;
         let str_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         self.calls.lock().unwrap().push(str_args);
 
@@ -99,13 +116,13 @@ impl LaunchctlRunner for MockLaunchctlRunner {
                     format!("{{\n\t\"Label\" = \"{}\";\n}};\n", SCHEDULER_LABEL)
                 };
                 Ok(std::process::Output {
-                    status: std::process::ExitStatus::from_raw(0),
+                    status: create_exit_status(0),
                     stdout: stdout_str.into_bytes(),
                     stderr: Vec::new(),
                 })
             } else {
                 Ok(std::process::Output {
-                    status: std::process::ExitStatus::from_raw(1 << 8),
+                    status: create_exit_status(1 << 8),
                     stdout: Vec::new(),
                     stderr: b"Could not find specified service".to_vec(),
                 })
@@ -114,14 +131,14 @@ impl LaunchctlRunner for MockLaunchctlRunner {
             self.loaded.store(false, Ordering::SeqCst);
             *self.loaded_executable.lock().unwrap() = None;
             Ok(std::process::Output {
-                status: std::process::ExitStatus::from_raw(0),
+                status: create_exit_status(0),
                 stdout: Vec::new(),
                 stderr: Vec::new(),
             })
         } else if args.first() == Some(&"load") {
             if self.load_should_fail.load(Ordering::SeqCst) {
                 Ok(std::process::Output {
-                    status: std::process::ExitStatus::from_raw(5 << 8),
+                    status: create_exit_status(5 << 8),
                     stdout: Vec::new(),
                     stderr: b"Service could not be registered: Input/output error".to_vec(),
                 })
@@ -143,14 +160,14 @@ impl LaunchctlRunner for MockLaunchctlRunner {
                     *self.loaded_executable.lock().unwrap() = Some(exe);
                 }
                 Ok(std::process::Output {
-                    status: std::process::ExitStatus::from_raw(0),
+                    status: create_exit_status(0),
                     stdout: Vec::new(),
                     stderr: Vec::new(),
                 })
             }
         } else {
             Ok(std::process::Output {
-                status: std::process::ExitStatus::from_raw(0),
+                status: create_exit_status(0),
                 stdout: Vec::new(),
                 stderr: Vec::new(),
             })

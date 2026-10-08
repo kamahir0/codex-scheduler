@@ -1,20 +1,20 @@
 # Development State
 
-Stage: correction-ready
-Candidate: 24903f1df73dc6dc2348fa95bce711f6b64e06bf
+Stage: verification-ready
+Candidate: ac9c2858ae31f8f9024f2161f3653ea954cfcb64
 Work base: 67710c63fd2257f3248aee2f7804a267aed5d0d1
 
 ## Active work
 
-- Current candidate: 24903f1df73dc6dc2348fa95bce711f6b64e06bf
-- Human Acceptance failure correction:
-  - Blocker 1: macOS unit tests mutate real launchd (with_dir uses RealLaunchctlRunner; stale test plist remained in launchd)
-  - Blocker 2: scheduler readiness false positive (is_scheduler_ready only checks exit status of launchctl list, not matching runtime-loaded target with disk plist target)
-- Required actions:
-  1. Spec-change for OS-SCHED-006 runtime target verification
-  2. Isolate macOS unit tests with MockLaunchctlRunner (no side effects on real launchd)
-  3. Implement runtime target extraction and matching in is_scheduler_ready
-  4. Ensure safe repair of same-label stale runtime registration on ensure/repair
-  5. Run all required tests and xtasks
-  6. Repair real host launchd and verify with status --json
-  7. Schedule and verify new Human Acceptance job
+- Current candidate: ac9c2858ae31f8f9024f2161f3653ea954cfcb64
+- Human Acceptance failure correction and verification completed:
+  1. Spec-change `0022-os-scheduler-runtime-target-verification.md` applied to `docs/specs/os-scheduler.md` (OS-SCHED-006) and `docs/specs/cli.md` (CLI-CMD-003).
+  2. Isolated unit tests from real launchd: `RealLaunchctlRunner` panics on tests; `with_dir` defaults to `MockLaunchctlRunner`. Real host launchd is never mutated by test suites.
+  3. Strict runtime target verification in `is_scheduler_ready`: parses `launchctl list` stdout and matches loaded executable against canonical plist target. Fails closed on mismatch, missing target, or unreadable identity.
+  4. Safe repair on ensure/repair: clears stale same-label runtime registration before reloading canonical Desktop plist.
+  5. Verified across full suite: 33 macOS scheduler unit tests, 68 core tests, 7 integration tests, 48 lifecycle tests, 10 xtask tests, `cargo xtask check-rationale`, `cargo xtask check-all`, Windows MSVC cross-compilation.
+  6. Real host repaired and verified:
+     - launchctl print: runtime program == `/Applications/Codex Scheduler.app/Contents/MacOS/codex-scheduler-gui`, last exit code = 0, penalty box removed.
+     - status --json: installed=true, ready=true, owner=desktop, target_exists=true, owner_target_valid=true.
+  7. Human Acceptance job `8a157c68-2c3e-4ecb-8d88-33803150a9f6` scheduled at 11:53:28Z and automatically claimed & executed on next launchd tick (11:54:07Z, run 3).
+- Next: Human Acceptance evaluation

@@ -1,4 +1,4 @@
-import { Job, CreateJobPayload, SystemInfo } from "./types";
+import { Job, CreateJobPayload, SystemInfo, ActiveLogResponse } from "./types";
 
 const isTauri = () => {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -139,6 +139,23 @@ export async function runJobNow(id: string): Promise<Job> {
     error_message: null,
   });
   return job;
+}
+
+export async function getActiveJobLog(id: string): Promise<ActiveLogResponse> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<ActiveLogResponse>("get_active_job_log", { id });
+  }
+
+  return {
+    job_id: id,
+    attempt_number: 1,
+    is_active: true,
+    codex_process_alive: true,
+    log_path: "/mock/logs/" + id + "/attempt-1.log",
+    output:
+      "[Mock Streaming Log] Codex session is running in background...\nThinking through task steps...\nWorking on files...",
+  };
 }
 
 export async function pickDirectory(): Promise<string | null> {

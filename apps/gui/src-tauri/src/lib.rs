@@ -127,6 +127,16 @@ fn delete_job(id: String, state: State<'_, AppState>) -> Result<bool, String> {
     service.delete_job(&id).map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ActiveLogResponse {
+    pub job_id: String,
+    pub attempt_number: u32,
+    pub is_active: bool,
+    pub codex_process_alive: bool,
+    pub log_path: Option<String>,
+    pub output: String,
+}
+
 #[tauri::command]
 async fn run_job_now(id: String, state: State<'_, AppState>) -> Result<Job, String> {
     let (store, exe_path) = {
@@ -135,6 +145,53 @@ async fn run_job_now(id: String, state: State<'_, AppState>) -> Result<Job, Stri
     };
     let service = SchedulerService::new(store, exe_path);
     service.execute_job(&id).await.map_err(|e| e.to_string())
+}
+
+// RATIONALE: [CODEX-RESUME-009] Read-only streaming log observation for running jobs in GUI
+// Provides safe bounded tail of active log file and process liveness without acquiring writer locks.
+#[tauri::command]
+fn get_active_job_log(id: String, state: State<'_, AppState>) -> Result<ActiveLogResponse, String> {
+    let service = state.service.lock().map_err(|e| e.to_string())?;
+    let job = service
+        .store()
+        .get_job(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Job {} not found", id))?;
+
+    let current_attempt = (job.execution_history.len() + 1) as u32;
+    let is_active = codex_scheduler_core::runner::is_runner_active(&job.id);
+    let runner_info_read = codex_scheduler_core::runner::read_runner_info_checked(&job.id);
+    let codex_alive = match runner_info_read {
+        codex_scheduler_core::runner::RunnerInfoRead::Present(ref info) => {
+            codex_scheduler_core::runner::check_codex_process_liveness(info)
+                == codex_scheduler_core::runner::LivenessState::ChildActive
+        }
+        _ => false,
+    };
+
+    let log_path = codex_scheduler_core::runner::runner_log_path(&job.id, current_attempt).ok();
+    let (path_str, output) = if let Some(ref p) = log_path {
+        let p_str = p.display().to_string();
+        let out = if p.exists() {
+            std::fs::read_to_string(p)
+                .map(|content| codex_scheduler_core::runner::bounded_log_tail(&content, 65536))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        (Some(p_str), out)
+    } else {
+        (None, String::new())
+    };
+
+    Ok(ActiveLogResponse {
+        job_id: id,
+        attempt_number: current_attempt,
+        is_active,
+        codex_process_alive: codex_alive,
+        log_path: path_str,
+        output,
+    })
 }
 
 #[tauri::command]
@@ -314,6 +371,7 @@ pub fn run() {
             cancel_job,
             delete_job,
             run_job_now,
+            get_active_job_log,
             get_system_info,
             provision_worker
         ])

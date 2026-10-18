@@ -67,8 +67,8 @@ pub fn default_check_steps() -> Vec<CheckStep> {
         CheckStep {
             name: "cargo-test",
             run: Box::new(|root| {
-                println!("Executing: cargo test --workspace");
-                run_command_in_root(root, "cargo", &["test", "--workspace"])
+                println!("Executing: cargo test --workspace -- --test-threads=1");
+                run_command_in_root(root, "cargo", &["test", "--workspace", "--", "--test-threads=1"])
             }),
         },
         CheckStep {

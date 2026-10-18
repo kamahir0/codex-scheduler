@@ -67,3 +67,13 @@ export interface SystemInfo {
   cli_worker_installed: boolean;
 }
 
+export interface ActiveLogResponse {
+  job_id: string;
+  attempt_number: number;
+  is_active: boolean;
+  codex_process_alive: boolean;
+  log_path: string | null;
+  output: string;
+}
+
+

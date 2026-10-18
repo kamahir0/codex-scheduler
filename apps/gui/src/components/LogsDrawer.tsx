@@ -10,9 +10,12 @@ import {
   Button,
   Empty,
   message,
+  Spin,
+  Checkbox,
 } from "antd";
 import { Terminal, Copy, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
-import { Job, ExecutionAttempt } from "../types";
+import { Job, ExecutionAttempt, ActiveLogResponse } from "../types";
+import { getActiveJobLog } from "../api";
 import dayjs from "dayjs";
 
 const { Text, Paragraph } = Typography;
@@ -24,6 +27,51 @@ interface LogsDrawerProps {
 }
 
 export const LogsDrawer: React.FC<LogsDrawerProps> = ({ job, open, onClose }) => {
+  const [activeLog, setActiveLog] = React.useState<ActiveLogResponse | null>(null);
+  const [loadingActive, setLoadingActive] = React.useState<boolean>(false);
+  const [lastUpdated, setLastUpdated] = React.useState<string | null>(null);
+  const [autoScroll, setAutoScroll] = React.useState<boolean>(true);
+  const liveLogRef = React.useRef<HTMLPreElement>(null);
+
+  React.useEffect(() => {
+    if (!open || !job || job.status !== "running") {
+      setActiveLog(null);
+      setLastUpdated(null);
+      return;
+    }
+
+    let isMounted = true;
+    const fetchLog = async () => {
+      try {
+        setLoadingActive(true);
+        const data = await getActiveJobLog(job.id);
+        if (isMounted) {
+          setActiveLog(data);
+          setLastUpdated(dayjs().format("HH:mm:ss"));
+        }
+      } catch (err) {
+        console.warn("Failed to fetch active job log:", err);
+      } finally {
+        if (isMounted) {
+          setLoadingActive(false);
+        }
+      }
+    };
+
+    fetchLog();
+    const timer = setInterval(fetchLog, 2000);
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
+  }, [open, job?.id, job?.status]);
+
+  React.useEffect(() => {
+    if (autoScroll && liveLogRef.current) {
+      liveLogRef.current.scrollTop = liveLogRef.current.scrollHeight;
+    }
+  }, [activeLog?.output, autoScroll]);
+
   if (!job) return null;
 
   const handleCopy = (text: string) => {
@@ -87,12 +135,99 @@ export const LogsDrawer: React.FC<LogsDrawerProps> = ({ job, open, onClose }) =>
         </Descriptions.Item>
       </Descriptions>
 
+      {job.status === "running" && (
+        <Card
+          size="small"
+          style={{
+            marginBottom: 24,
+            borderColor: "#1677ff",
+            borderRadius: 8,
+            boxShadow: "0 2px 8px rgba(22, 119, 255, 0.12)",
+          }}
+          title={
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 8,
+              }}
+            >
+              <Space>
+                <Spin size="small" />
+                <span style={{ fontWeight: 600, color: "#1677ff" }}>
+                  実行中リアルタイムログ (試行 #{activeLog?.attempt_number ?? job.execution_history.length + 1})
+                </span>
+              </Space>
+              <Space size="middle">
+                {lastUpdated && (
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    更新: {lastUpdated}
+                  </Text>
+                )}
+                <Checkbox
+                  checked={autoScroll}
+                  onChange={(e) => setAutoScroll(e.target.checked)}
+                  style={{ fontSize: 12 }}
+                >
+                  自動スクロール
+                </Checkbox>
+                {activeLog?.output && (
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<Copy size={13} />}
+                    onClick={() => handleCopy(activeLog.output)}
+                  >
+                    コピー
+                  </Button>
+                )}
+              </Space>
+            </div>
+          }
+        >
+          {activeLog?.log_path && (
+            <div style={{ marginBottom: 6 }}>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                ログ保存先: <Text code style={{ fontSize: 11 }}>{activeLog.log_path}</Text>
+              </Text>
+            </div>
+          )}
+          <pre
+            ref={liveLogRef}
+            style={{
+              background: "#0d1117",
+              color: "#58a6ff",
+              padding: 12,
+              borderRadius: 6,
+              fontSize: 12,
+              lineHeight: "1.5",
+              maxHeight: 280,
+              overflow: "auto",
+              margin: 0,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+            }}
+          >
+            {activeLog?.output ? (
+              activeLog.output
+            ) : (
+              <span style={{ color: "#8b949e", fontStyle: "italic" }}>
+                ログ出力の到着を待機中... (Codex プロセスが起動・準備中です)
+              </span>
+            )}
+          </pre>
+        </Card>
+      )}
+
       <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 16 }}>
         実行履歴 ({job.execution_history.length} 試行)
       </div>
 
       {job.execution_history.length === 0 ? (
-        <Empty description="まだ実行履歴はありません（指定時刻以降、次回のスケジューラ確認時に実行されます）" />
+        <Empty description="まだ完了した実行履歴はありません（実行中の内容は上部に表示されます）" />
       ) : (
         <Timeline
           items={job.execution_history.map((att: ExecutionAttempt, index: number) => {

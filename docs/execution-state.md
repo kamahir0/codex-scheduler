@@ -1,7 +1,7 @@
 # Development State
 
 Stage: verification-ready
-Candidate: 519a171da18207a0378dab4b9aaa6d052c8892dd
+Candidate: 92d368bf8a34e622f6d27f56480dab1c31493372
 Work base: 67710c63fd2257f3248aee2f7804a267aed5d0d1
 
 ## Active work
